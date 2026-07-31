@@ -1,0 +1,26 @@
+# Local user data
+custom_vocabulary.json
+flashcard_progress.json
+
+# Python
+__pycache__/
+*.py[cod]
+desktop/build/
+desktop/dist/
+
+# Android / Gradle
+android/.gradle/
+android/local.properties
+android/**/build/
+*.jks
+*.keystore
+keystore.properties
+
+# IDE and OS files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Codex workspace metadata
+.agents/
