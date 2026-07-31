@@ -17,6 +17,7 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.view.Gravity;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.Window;
@@ -99,6 +100,10 @@ public final class MainActivity extends Activity {
     private View drawerScrim;
     private LinearLayout drawer;
     private boolean drawerOpen;
+    private boolean drawerGestureTracking;
+    private boolean drawerGestureStartedOpen;
+    private float drawerGestureStartX;
+    private float drawerGestureStartY;
     private final Set<String> expandedKanaGroups = new HashSet<>();
     private String activeKana;
     private TextView vocabularyCount;
@@ -306,9 +311,6 @@ public final class MainActivity extends Activity {
         }
 
         menuContent.addView(drawerSectionLabel("BROWSE BY KANA"));
-        Button allWords = drawerButton("All words", true);
-        allWords.setOnClickListener(view -> closeDrawer(() -> jumpToKana(null)));
-        menuContent.addView(allWords, drawerItemParams(0));
 
         Set<String> available = availableKana();
         for (String[] kanaRow : KANA_ROWS) {
@@ -517,6 +519,48 @@ public final class MainActivity extends Activity {
         }
     }
 
+    @Override
+    public boolean dispatchTouchEvent(MotionEvent event) {
+        int action = event.getActionMasked();
+        if (action == MotionEvent.ACTION_DOWN) {
+            drawerGestureStartX = event.getX();
+            drawerGestureStartY = event.getY();
+            drawerGestureStartedOpen = drawerOpen;
+            drawerGestureTracking = drawerOpen
+                    ? drawer != null && drawerGestureStartX <= drawer.getWidth()
+                    : drawerGestureStartX <= dp(28);
+        } else if (action == MotionEvent.ACTION_MOVE && drawerGestureTracking) {
+            float deltaX = event.getX() - drawerGestureStartX;
+            float deltaY = event.getY() - drawerGestureStartY;
+            float horizontalDistance = Math.abs(deltaX);
+            float verticalDistance = Math.abs(deltaY);
+
+            if (verticalDistance > dp(14) && verticalDistance > horizontalDistance) {
+                drawerGestureTracking = false;
+            } else if (horizontalDistance > dp(72)
+                    && horizontalDistance > verticalDistance * 1.35f) {
+                boolean shouldClose = drawerGestureStartedOpen && deltaX < 0;
+                boolean shouldOpen = !drawerGestureStartedOpen && deltaX > 0;
+                if (shouldOpen || shouldClose) {
+                    drawerGestureTracking = false;
+                    MotionEvent cancel = MotionEvent.obtain(event);
+                    cancel.setAction(MotionEvent.ACTION_CANCEL);
+                    super.dispatchTouchEvent(cancel);
+                    cancel.recycle();
+                    if (shouldOpen) {
+                        openDrawer();
+                    } else {
+                        closeDrawer(null);
+                    }
+                    return true;
+                }
+            }
+        } else if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+            drawerGestureTracking = false;
+        }
+        return super.dispatchTouchEvent(event);
+    }
+
     @SuppressLint("GestureBackNavigation")
     @SuppressWarnings("deprecation")
     @Override
@@ -544,6 +588,7 @@ public final class MainActivity extends Activity {
         }
         hideKeyboard();
         currentLevel = level;
+        activeKana = null;
         loadedFlashLevel = null;
         preferences.edit().putString(PREF_LEVEL, currentLevel).apply();
         buildInterface();
@@ -594,7 +639,20 @@ public final class MainActivity extends Activity {
         if (reading == null || reading.trim().isEmpty()) {
             return null;
         }
-        char kana = reading.trim().charAt(0);
+        char kana = 0;
+        String cleaned = reading.trim();
+        for (int index = 0; index < cleaned.length(); index++) {
+            char candidate = cleaned.charAt(index);
+            boolean hiragana = candidate >= 'ぁ' && candidate <= 'ゖ';
+            boolean katakana = candidate >= 'ァ' && candidate <= 'ヶ';
+            if (hiragana || katakana) {
+                kana = candidate;
+                break;
+            }
+        }
+        if (kana == 0) {
+            return null;
+        }
         if (kana >= 'ァ' && kana <= 'ヶ') {
             kana = (char) (kana - 0x60);
         }
@@ -1303,11 +1361,18 @@ public final class MainActivity extends Activity {
         private View buildKanaSectionRow(String kana, boolean firstSection) {
             LinearLayout section = new LinearLayout(MainActivity.this);
             section.setOrientation(LinearLayout.VERTICAL);
-            section.setPadding(dp(8), firstSection ? dp(8) : dp(28), dp(8), 0);
+            section.setPadding(0, firstSection ? dp(12) : dp(52), 0, 0);
             section.setBackgroundColor(paper);
+
+            View marker = new View(MainActivity.this);
+            marker.setBackgroundColor(accent);
+            LinearLayout.LayoutParams markerParams = new LinearLayout.LayoutParams(dp(48), dp(3));
+            markerParams.setMargins(dp(16), 0, 0, dp(13));
+            section.addView(marker, markerParams);
+
             TextView title = label(
                     kana,
-                    24,
+                    28,
                     darkMode ? Color.rgb(255, 216, 200) : accent,
                     Typeface.BOLD
             );
@@ -1315,7 +1380,7 @@ public final class MainActivity extends Activity {
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.WRAP_CONTENT
             );
-            titleParams.setMargins(dp(2), 0, 0, dp(7));
+            titleParams.setMargins(dp(16), 0, 0, dp(12));
             section.addView(title, titleParams);
 
             LinearLayout tableHeader = new LinearLayout(MainActivity.this);
