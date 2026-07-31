@@ -19,7 +19,7 @@ Both apps work locally. No account, internet permission, analytics, or cloud sto
 
 - Vocabulary browsing and full-text search
 - Clearly separated and aligned per-hiragana vocabulary tables
-- Animated slide-out menu with expandable あ–ん navigation and edge-swipe gestures
+- Finger-tracked slide-out menu with automatic visible-kana highlighting
 - N5–N1 level selector
 - Centered flashcard decks with a visual progress bar and automatic saving
 - Light and dark themes

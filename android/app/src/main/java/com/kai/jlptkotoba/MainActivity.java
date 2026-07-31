@@ -10,6 +10,7 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.res.ColorStateList;
 import android.graphics.Color;
+import android.graphics.Rect;
 import android.graphics.Typeface;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.GradientDrawable;
@@ -18,8 +19,10 @@ import android.os.Build;
 import android.os.Bundle;
 import android.view.Gravity;
 import android.view.MotionEvent;
+import android.view.VelocityTracker;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.ViewConfiguration;
 import android.view.Window;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
@@ -29,6 +32,7 @@ import android.content.Context;
 import android.text.Editable;
 import android.text.TextWatcher;
 import android.widget.BaseAdapter;
+import android.widget.AbsListView;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.FrameLayout;
@@ -99,11 +103,19 @@ public final class MainActivity extends Activity {
     private LinearLayout content;
     private View drawerScrim;
     private LinearLayout drawer;
+    private ScrollView drawerScroll;
     private boolean drawerOpen;
     private boolean drawerGestureTracking;
+    private boolean drawerGestureDragging;
     private boolean drawerGestureStartedOpen;
     private float drawerGestureStartX;
     private float drawerGestureStartY;
+    private int systemGestureInsetLeft;
+    private int systemGestureInsetRight;
+    private VelocityTracker drawerVelocityTracker;
+    private final Map<String, LinearLayout> drawerGroupChildren = new HashMap<>();
+    private final Map<String, ImageView> drawerGroupChevrons = new HashMap<>();
+    private final Map<String, Button> drawerKanaButtons = new HashMap<>();
     private final Set<String> expandedKanaGroups = new HashSet<>();
     private String activeKana;
     private TextView vocabularyCount;
@@ -231,6 +243,10 @@ public final class MainActivity extends Activity {
     }
 
     private void buildDrawerLayer() {
+        drawerGroupChildren.clear();
+        drawerGroupChevrons.clear();
+        drawerKanaButtons.clear();
+
         drawerScrim = new View(this);
         drawerScrim.setBackgroundColor(Color.argb(150, 0, 0, 0));
         drawerScrim.setAlpha(0f);
@@ -268,6 +284,7 @@ public final class MainActivity extends Activity {
         drawer.addView(drawerHeader);
 
         ScrollView scroll = new ScrollView(this);
+        drawerScroll = scroll;
         scroll.setFillViewport(true);
         scroll.setClipToPadding(false);
         LinearLayout menuContent = new LinearLayout(this);
@@ -356,10 +373,13 @@ public final class MainActivity extends Activity {
                         closeDrawer(() -> jumpToKana(kana));
                     }
                 });
+                drawerKanaButtons.put(kana, child);
                 children.addView(child, drawerItemParams(dp(4)));
             }
             children.setVisibility(expandedKanaGroups.contains(groupKana) ? View.VISIBLE : View.GONE);
             menuContent.addView(children);
+            drawerGroupChildren.put(groupKana, children);
+            drawerGroupChevrons.put(groupKana, chevron);
 
             boolean finalRowAvailable = rowAvailable;
             group.setOnClickListener(view -> {
@@ -442,46 +462,137 @@ public final class MainActivity extends Activity {
         animator.start();
     }
 
+    private String kanaGroupKey(String kana) {
+        if (kana == null) {
+            return null;
+        }
+        for (String[] row : KANA_ROWS) {
+            for (String candidate : row) {
+                if (candidate.equals(kana)) {
+                    return row[0];
+                }
+            }
+        }
+        return null;
+    }
+
+    private void syncDrawerToActiveKana() {
+        if (activeKana == null || drawerScroll == null) {
+            return;
+        }
+        String activeGroup = kanaGroupKey(activeKana);
+        if (activeGroup == null) {
+            return;
+        }
+
+        expandedKanaGroups.clear();
+        expandedKanaGroups.add(activeGroup);
+        for (Map.Entry<String, LinearLayout> entry : drawerGroupChildren.entrySet()) {
+            boolean expanded = entry.getKey().equals(activeGroup);
+            LinearLayout children = entry.getValue();
+            ViewGroup.LayoutParams params = children.getLayoutParams();
+            params.height = ViewGroup.LayoutParams.WRAP_CONTENT;
+            children.setLayoutParams(params);
+            children.setAlpha(1f);
+            children.setVisibility(expanded ? View.VISIBLE : View.GONE);
+
+            ImageView chevron = drawerGroupChevrons.get(entry.getKey());
+            if (chevron != null) {
+                chevron.animate().cancel();
+                chevron.setRotation(expanded ? 180f : 0f);
+            }
+        }
+
+        for (Map.Entry<String, Button> entry : drawerKanaButtons.entrySet()) {
+            boolean selected = entry.getKey().equals(activeKana);
+            Button item = entry.getValue();
+            item.setTypeface(Typeface.DEFAULT, selected ? Typeface.BOLD : Typeface.NORMAL);
+            item.setTextColor(selected ? Color.rgb(255, 247, 237) : ink);
+            item.setBackground(selected
+                    ? roundedBackground(accent, accent, 9)
+                    : roundedBackground(panel, line, 9));
+        }
+
+        Button activeButton = drawerKanaButtons.get(activeKana);
+        if (activeButton != null) {
+            drawerScroll.post(() -> {
+                Rect target = new Rect();
+                activeButton.getDrawingRect(target);
+                drawerScroll.offsetDescendantRectToMyCoords(activeButton, target);
+                drawerScroll.smoothScrollTo(0, Math.max(0, target.top - dp(88)));
+            });
+        }
+    }
+
     private void openDrawer() {
         if (drawerOpen || drawer == null) {
             return;
         }
         hideKeyboard();
-        drawerOpen = true;
+        syncDrawerToActiveKana();
+        showDrawerLayer();
+        animateDrawerTo(true, null);
+    }
+
+    private void showDrawerLayer() {
+        drawer.animate().cancel();
+        drawerScrim.animate().cancel();
         drawerScrim.setVisibility(View.VISIBLE);
         drawer.setVisibility(View.VISIBLE);
-        drawer.bringToFront();
         drawerScrim.bringToFront();
         drawer.bringToFront();
-        drawerScrim.animate().alpha(1f).setDuration(220).start();
-        drawer.animate()
-                .translationX(0f)
-                .setDuration(260)
+    }
+
+    private void setDrawerTranslation(float translation) {
+        float width = Math.max(1f, drawer.getWidth());
+        float clamped = Math.max(-width, Math.min(0f, translation));
+        drawer.setTranslationX(clamped);
+        drawerScrim.setAlpha(1f + clamped / width);
+    }
+
+    private void animateDrawerTo(boolean open, Runnable afterAnimation) {
+        showDrawerLayer();
+        float width = Math.max(1f, drawer.getWidth());
+        float target = open ? 0f : -width;
+        float distanceFraction = Math.abs(target - drawer.getTranslationX()) / width;
+        long duration = Math.max(120L, Math.round(260f * distanceFraction));
+        drawerOpen = open;
+
+        drawerScrim.animate()
+                .alpha(open ? 1f : 0f)
+                .setDuration(duration)
                 .setInterpolator(new DecelerateInterpolator())
+                .start();
+        drawer.animate()
+                .translationX(target)
+                .setDuration(duration)
+                .setInterpolator(new DecelerateInterpolator())
+                .withEndAction(() -> {
+                    if (!open) {
+                        drawer.setVisibility(View.INVISIBLE);
+                        drawerScrim.setVisibility(View.GONE);
+                    }
+                    if (afterAnimation != null) {
+                        afterAnimation.run();
+                    }
+                })
                 .start();
     }
 
     private void closeDrawer(Runnable afterClose) {
-        if (!drawerOpen || drawer == null) {
+        if (drawer == null) {
             if (afterClose != null) {
                 afterClose.run();
             }
             return;
         }
-        drawerOpen = false;
-        drawerScrim.animate().alpha(0f).setDuration(180).start();
-        drawer.animate()
-                .translationX(-drawer.getWidth())
-                .setDuration(220)
-                .setInterpolator(new DecelerateInterpolator())
-                .withEndAction(() -> {
-                    drawer.setVisibility(View.INVISIBLE);
-                    drawerScrim.setVisibility(View.GONE);
-                    if (afterClose != null) {
-                        afterClose.run();
-                    }
-                })
-                .start();
+        if (!drawerOpen && drawer.getVisibility() != View.VISIBLE) {
+            if (afterClose != null) {
+                afterClose.run();
+            }
+            return;
+        }
+        animateDrawerTo(false, afterClose);
     }
 
     private void installSystemBarInsets() {
@@ -490,11 +601,19 @@ public final class MainActivity extends Activity {
             int bottomInset;
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 android.graphics.Insets bars = insets.getInsets(WindowInsets.Type.systemBars());
+                android.graphics.Insets gestures = insets.getInsets(WindowInsets.Type.systemGestures());
                 topInset = bars.top;
                 bottomInset = bars.bottom;
+                systemGestureInsetLeft = gestures.left;
+                systemGestureInsetRight = gestures.right;
             } else {
                 topInset = insets.getSystemWindowInsetTop();
                 bottomInset = insets.getSystemWindowInsetBottom();
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    android.graphics.Insets gestures = insets.getSystemGestureInsets();
+                    systemGestureInsetLeft = gestures.left;
+                    systemGestureInsetRight = gestures.right;
+                }
             }
             topChrome.setPadding(0, topInset, 0, 0);
             mainColumn.setPadding(0, 0, 0, bottomInset);
@@ -523,42 +642,101 @@ public final class MainActivity extends Activity {
     public boolean dispatchTouchEvent(MotionEvent event) {
         int action = event.getActionMasked();
         if (action == MotionEvent.ACTION_DOWN) {
+            recycleDrawerVelocityTracker();
+            drawerVelocityTracker = VelocityTracker.obtain();
+            drawerVelocityTracker.addMovement(event);
             drawerGestureStartX = event.getX();
             drawerGestureStartY = event.getY();
             drawerGestureStartedOpen = drawerOpen;
-            drawerGestureTracking = drawerOpen
-                    ? drawer != null && drawerGestureStartX <= drawer.getWidth()
-                    : drawerGestureStartX <= dp(28);
-        } else if (action == MotionEvent.ACTION_MOVE && drawerGestureTracking) {
+            drawerGestureDragging = false;
+
+            boolean insideOpenDrawer = drawerOpen
+                    && drawer != null
+                    && drawerGestureStartX <= drawer.getWidth();
+            int safeLeft = Math.max(dp(32), systemGestureInsetLeft + dp(8));
+            int safeRight = Math.max(dp(32), systemGestureInsetRight + dp(8));
+            boolean insideGestureSafeContent = !drawerOpen
+                    && root != null
+                    && drawerGestureStartX >= safeLeft
+                    && drawerGestureStartX <= root.getWidth() - safeRight;
+            drawerGestureTracking = insideOpenDrawer || insideGestureSafeContent;
+        } else if (drawerVelocityTracker != null) {
+            drawerVelocityTracker.addMovement(event);
+        }
+
+        if (action == MotionEvent.ACTION_MOVE && drawerGestureTracking) {
             float deltaX = event.getX() - drawerGestureStartX;
             float deltaY = event.getY() - drawerGestureStartY;
             float horizontalDistance = Math.abs(deltaX);
             float verticalDistance = Math.abs(deltaY);
+            int touchSlop = ViewConfiguration.get(this).getScaledTouchSlop();
 
-            if (verticalDistance > dp(14) && verticalDistance > horizontalDistance) {
-                drawerGestureTracking = false;
-            } else if (horizontalDistance > dp(72)
-                    && horizontalDistance > verticalDistance * 1.35f) {
-                boolean shouldClose = drawerGestureStartedOpen && deltaX < 0;
-                boolean shouldOpen = !drawerGestureStartedOpen && deltaX > 0;
-                if (shouldOpen || shouldClose) {
+            if (!drawerGestureDragging) {
+                if (verticalDistance > touchSlop && verticalDistance > horizontalDistance) {
                     drawerGestureTracking = false;
-                    MotionEvent cancel = MotionEvent.obtain(event);
-                    cancel.setAction(MotionEvent.ACTION_CANCEL);
-                    super.dispatchTouchEvent(cancel);
-                    cancel.recycle();
-                    if (shouldOpen) {
-                        openDrawer();
+                } else if (horizontalDistance > touchSlop) {
+                    boolean correctDirection = drawerGestureStartedOpen ? deltaX < 0 : deltaX > 0;
+                    if (!correctDirection) {
+                        drawerGestureTracking = false;
                     } else {
-                        closeDrawer(null);
+                        drawerGestureDragging = true;
+                        hideKeyboard();
+                        if (!drawerGestureStartedOpen) {
+                            syncDrawerToActiveKana();
+                        }
+                        showDrawerLayer();
+                        MotionEvent cancel = MotionEvent.obtain(event);
+                        cancel.setAction(MotionEvent.ACTION_CANCEL);
+                        super.dispatchTouchEvent(cancel);
+                        cancel.recycle();
                     }
-                    return true;
                 }
             }
-        } else if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+
+            if (drawerGestureDragging) {
+                float width = Math.max(1f, drawer.getWidth());
+                float startTranslation = drawerGestureStartedOpen ? 0f : -width;
+                setDrawerTranslation(startTranslation + deltaX);
+                return true;
+            }
+        }
+
+        if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+            if (drawerGestureDragging) {
+                boolean open;
+                if (action == MotionEvent.ACTION_CANCEL) {
+                    open = drawerGestureStartedOpen;
+                } else {
+                    drawerVelocityTracker.computeCurrentVelocity(1000);
+                    float velocityX = drawerVelocityTracker.getXVelocity();
+                    float minimumFling = Math.max(
+                            ViewConfiguration.get(this).getScaledMinimumFlingVelocity(),
+                            dp(450)
+                    );
+                    float width = Math.max(1f, drawer.getWidth());
+                    float openFraction = 1f + drawer.getTranslationX() / width;
+                    open = Math.abs(velocityX) >= minimumFling
+                            ? velocityX > 0
+                            : openFraction >= 0.5f;
+                }
+                drawerGestureTracking = false;
+                drawerGestureDragging = false;
+                recycleDrawerVelocityTracker();
+                animateDrawerTo(open, null);
+                return true;
+            }
             drawerGestureTracking = false;
+            drawerGestureDragging = false;
+            recycleDrawerVelocityTracker();
         }
         return super.dispatchTouchEvent(event);
+    }
+
+    private void recycleDrawerVelocityTracker() {
+        if (drawerVelocityTracker != null) {
+            drawerVelocityTracker.recycle();
+            drawerVelocityTracker = null;
+        }
     }
 
     @SuppressLint("GestureBackNavigation")
@@ -786,6 +964,34 @@ public final class MainActivity extends Activity {
                     .show();
             return true;
         });
+
+        vocabularyList.setOnScrollListener(new AbsListView.OnScrollListener() {
+            @Override
+            public void onScrollStateChanged(AbsListView view, int scrollState) {
+            }
+
+            @Override
+            public void onScroll(
+                    AbsListView view,
+                    int firstVisibleItem,
+                    int visibleItemCount,
+                    int totalItemCount
+            ) {
+                if (wordAdapter == null || totalItemCount == 0) {
+                    return;
+                }
+                String visibleKana = wordAdapter.kanaAtPosition(firstVisibleItem);
+                if (visibleKana != null) {
+                    activeKana = visibleKana;
+                }
+            }
+        });
+        String initialKana = wordAdapter.kanaAtPosition(
+                Math.max(0, vocabularyList.getFirstVisiblePosition())
+        );
+        if (initialKana != null) {
+            activeKana = initialKana;
+        }
     }
 
     private void updateVocabularyFilter(List<Word> allWords, String query) {
@@ -1347,6 +1553,13 @@ public final class MainActivity extends Activity {
                 }
             }
             return -1;
+        }
+
+        String kanaAtPosition(int position) {
+            if (position < 0 || position >= items.size()) {
+                return null;
+            }
+            return items.get(position).kana;
         }
 
         @Override
