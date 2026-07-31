@@ -774,19 +774,32 @@ public final class MainActivity extends Activity {
 
     private void jumpToKana(String kana) {
         activeKana = kana;
-        searchQuery = "";
+        boolean switchingToVocabulary = !"vocabulary".equals(currentMode);
+        boolean clearingSearch = !searchQuery.isEmpty();
         if (!"vocabulary".equals(currentMode)) {
             currentMode = "vocabulary";
             preferences.edit().putString(PREF_MODE, currentMode).apply();
         }
-        buildInterface();
+        searchQuery = "";
+        if (switchingToVocabulary) {
+            buildInterface();
+        } else if (clearingSearch) {
+            renderCurrentScreen();
+        }
+        animateVocabularyToKana(kana);
+    }
+
+    private void animateVocabularyToKana(String kana) {
         if (vocabularyList == null || wordAdapter == null) {
             return;
         }
         vocabularyList.post(() -> {
             int position = kana == null ? 0 : wordAdapter.positionForKana(kana);
             if (position >= 0) {
-                vocabularyList.setSelection(position);
+                int currentPosition = Math.max(0, vocabularyList.getFirstVisiblePosition());
+                int itemDistance = Math.abs(position - currentPosition);
+                int duration = Math.min(1200, 280 + itemDistance * 9);
+                vocabularyList.smoothScrollToPositionFromTop(position, dp(4), duration);
             }
         });
     }
