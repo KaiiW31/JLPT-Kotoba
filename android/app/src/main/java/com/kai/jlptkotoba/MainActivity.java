@@ -1,19 +1,28 @@
 package com.kai.jlptkotoba;
 
+import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.animation.Animator;
+import android.animation.AnimatorListenerAdapter;
+import android.animation.ValueAnimator;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.res.ColorStateList;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.Window;
+import android.view.WindowInsets;
+import android.view.WindowInsetsController;
+import android.view.animation.DecelerateInterpolator;
 import android.view.inputmethod.InputMethodManager;
 import android.content.Context;
 import android.text.Editable;
@@ -25,8 +34,11 @@ import android.widget.FrameLayout;
 import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
 import android.widget.ListView;
+import android.widget.ProgressBar;
+import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
+import android.window.OnBackInvokedDispatcher;
 
 import org.json.JSONArray;
 import org.json.JSONException;
@@ -35,17 +47,44 @@ import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 public final class MainActivity extends Activity {
     static final String[] LEVELS = {"N5", "N4", "N3", "N2", "N1"};
+    private static final String[][] KANA_ROWS = {
+            {"あ", "い", "う", "え", "お"},
+            {"か", "き", "く", "け", "こ"},
+            {"さ", "し", "す", "せ", "そ"},
+            {"た", "ち", "つ", "て", "と"},
+            {"な", "に", "ぬ", "ね", "の"},
+            {"は", "ひ", "ふ", "へ", "ほ"},
+            {"ま", "み", "む", "め", "も"},
+            {"や", "ゆ", "よ"},
+            {"ら", "り", "る", "れ", "ろ"},
+            {"わ", "を", "ん"}
+    };
+    private static final String[][] KANA_ROMAJI_ROWS = {
+            {"a", "i", "u", "e", "o"},
+            {"ka", "ki", "ku", "ke", "ko"},
+            {"sa", "shi", "su", "se", "so"},
+            {"ta", "chi", "tsu", "te", "to"},
+            {"na", "ni", "nu", "ne", "no"},
+            {"ha", "hi", "fu", "he", "ho"},
+            {"ma", "mi", "mu", "me", "mo"},
+            {"ya", "yu", "yo"},
+            {"ra", "ri", "ru", "re", "ro"},
+            {"wa", "wo", "n"}
+    };
 
     private static final int IMPORT_CSV_REQUEST = 41;
     private static final String PREFS_NAME = "jlpt_kotoba";
     private static final String PREF_DARK_MODE = "dark_mode";
     private static final String PREF_LEVEL = "current_level";
     private static final String PREF_MODE = "current_mode";
+    private static final String PREF_HEADER_EXPANDED = "header_expanded";
 
     private SharedPreferences preferences;
     private VocabularyRepository repository;
@@ -54,8 +93,18 @@ public final class MainActivity extends Activity {
     private String currentMode;
     private String searchQuery = "";
 
-    private LinearLayout root;
+    private FrameLayout root;
+    private LinearLayout mainColumn;
+    private LinearLayout topChrome;
+    private LinearLayout navigationPanel;
     private LinearLayout content;
+    private Button collapseButton;
+    private View drawerScrim;
+    private LinearLayout drawer;
+    private boolean headerExpanded = true;
+    private boolean drawerOpen;
+    private final Set<String> expandedKanaGroups = new HashSet<>();
+    private String activeKana;
     private TextView vocabularyCount;
     private ListView vocabularyList;
     private WordAdapter wordAdapter;
@@ -82,6 +131,7 @@ public final class MainActivity extends Activity {
         darkMode = preferences.getBoolean(PREF_DARK_MODE, false);
         currentLevel = preferences.getString(PREF_LEVEL, "N5");
         currentMode = preferences.getString(PREF_MODE, "vocabulary");
+        headerExpanded = preferences.getBoolean(PREF_HEADER_EXPANDED, true);
         if (!isLevel(currentLevel)) {
             currentLevel = "N5";
         }
@@ -92,6 +142,7 @@ public final class MainActivity extends Activity {
         try {
             repository = new VocabularyRepository(this, preferences);
             buildInterface();
+            registerBackHandler();
         } catch (Exception error) {
             showFatalError(error);
         }
@@ -101,27 +152,49 @@ public final class MainActivity extends Activity {
         applyPalette();
         configureWindow();
 
-        root = new LinearLayout(this);
-        root.setOrientation(LinearLayout.VERTICAL);
+        root = new FrameLayout(this);
         root.setBackgroundColor(paper);
         setContentView(root);
 
-        root.addView(buildToolbar(), new LinearLayout.LayoutParams(
+        mainColumn = new LinearLayout(this);
+        mainColumn.setOrientation(LinearLayout.VERTICAL);
+        mainColumn.setBackgroundColor(paper);
+        root.addView(mainColumn, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+        ));
+
+        topChrome = new LinearLayout(this);
+        topChrome.setOrientation(LinearLayout.VERTICAL);
+        topChrome.setBackgroundColor(topbar);
+        topChrome.addView(buildToolbar(), new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
         ));
-        root.addView(buildModeSelector(), new LinearLayout.LayoutParams(
+        navigationPanel = new LinearLayout(this);
+        navigationPanel.setOrientation(LinearLayout.VERTICAL);
+        navigationPanel.setBackgroundColor(topbar);
+        navigationPanel.addView(buildModeSelector(), new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
         ));
-        root.addView(buildLevelSelector(), new LinearLayout.LayoutParams(
+        navigationPanel.addView(buildLevelSelector(), new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 dp(58)
+        ));
+        navigationPanel.setVisibility(headerExpanded ? View.VISIBLE : View.GONE);
+        topChrome.addView(navigationPanel, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        ));
+        mainColumn.addView(topChrome, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
         ));
 
         FrameLayout contentHost = new FrameLayout(this);
         contentHost.setPadding(dp(16), dp(12), dp(16), dp(14));
-        root.addView(contentHost, new LinearLayout.LayoutParams(
+        mainColumn.addView(contentHost, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 0,
                 1
@@ -139,17 +212,28 @@ public final class MainActivity extends Activity {
         } else {
             renderVocabulary();
         }
+
+        buildDrawerLayer();
+        installSystemBarInsets();
     }
 
     private View buildToolbar() {
         LinearLayout toolbar = new LinearLayout(this);
         toolbar.setOrientation(LinearLayout.HORIZONTAL);
         toolbar.setGravity(Gravity.CENTER_VERTICAL);
-        toolbar.setPadding(dp(20), dp(14), dp(14), dp(12));
+        toolbar.setPadding(dp(12), dp(8), dp(10), dp(7));
         toolbar.setBackgroundColor(topbar);
 
-        TextView title = label("JLPT Kotoba", 25, Color.rgb(255, 247, 237), Typeface.BOLD);
-        toolbar.addView(title, new LinearLayout.LayoutParams(0, dp(52), 1));
+        Button menu = button("☰", false, true);
+        menu.setTextSize(20);
+        menu.setContentDescription("Open menu");
+        menu.setOnClickListener(view -> openDrawer());
+        toolbar.addView(menu, new LinearLayout.LayoutParams(dp(48), dp(44)));
+
+        TextView title = label("JLPT Kotoba", 22, Color.rgb(255, 247, 237), Typeface.BOLD);
+        LinearLayout.LayoutParams titleParams = new LinearLayout.LayoutParams(0, dp(48), 1);
+        titleParams.setMargins(dp(10), 0, dp(6), 0);
+        toolbar.addView(title, titleParams);
 
         Button theme = button(darkMode ? "Light" : "Dark", false, false);
         theme.setOnClickListener(view -> {
@@ -157,9 +241,16 @@ public final class MainActivity extends Activity {
             preferences.edit().putBoolean(PREF_DARK_MODE, darkMode).apply();
             buildInterface();
         });
-        LinearLayout.LayoutParams themeParams = new LinearLayout.LayoutParams(dp(84), dp(44));
-        themeParams.setMargins(dp(8), 0, 0, 0);
+        LinearLayout.LayoutParams themeParams = new LinearLayout.LayoutParams(dp(72), dp(44));
         toolbar.addView(theme, themeParams);
+
+        collapseButton = button(headerExpanded ? "⌃" : "⌄", false, true);
+        collapseButton.setTextSize(20);
+        collapseButton.setContentDescription(headerExpanded ? "Collapse navigation" : "Expand navigation");
+        collapseButton.setOnClickListener(view -> toggleHeader());
+        LinearLayout.LayoutParams collapseParams = new LinearLayout.LayoutParams(dp(46), dp(44));
+        collapseParams.setMargins(dp(6), 0, 0, 0);
+        toolbar.addView(collapseButton, collapseParams);
         return toolbar;
     }
 
@@ -201,6 +292,341 @@ public final class MainActivity extends Activity {
         return scroll;
     }
 
+    private void toggleHeader() {
+        if (navigationPanel == null || collapseButton == null) {
+            return;
+        }
+
+        boolean expanding = !headerExpanded;
+        headerExpanded = expanding;
+        preferences.edit().putBoolean(PREF_HEADER_EXPANDED, headerExpanded).apply();
+        collapseButton.setText(expanding ? "⌃" : "⌄");
+        collapseButton.setContentDescription(expanding ? "Collapse navigation" : "Expand navigation");
+
+        int startHeight = navigationPanel.getHeight();
+        int targetHeight;
+        if (expanding) {
+            navigationPanel.setVisibility(View.VISIBLE);
+            navigationPanel.getLayoutParams().height = ViewGroup.LayoutParams.WRAP_CONTENT;
+            navigationPanel.measure(
+                    View.MeasureSpec.makeMeasureSpec(Math.max(1, root.getWidth()), View.MeasureSpec.EXACTLY),
+                    View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
+            );
+            targetHeight = navigationPanel.getMeasuredHeight();
+            navigationPanel.getLayoutParams().height = 0;
+            navigationPanel.setAlpha(0f);
+        } else {
+            targetHeight = 0;
+        }
+
+        ValueAnimator animator = ValueAnimator.ofInt(startHeight, targetHeight);
+        animator.setDuration(240);
+        animator.setInterpolator(new DecelerateInterpolator());
+        animator.addUpdateListener(value -> {
+            ViewGroup.LayoutParams params = navigationPanel.getLayoutParams();
+            params.height = (int) value.getAnimatedValue();
+            navigationPanel.setLayoutParams(params);
+            float fraction = value.getAnimatedFraction();
+            navigationPanel.setAlpha(expanding ? fraction : 1f - fraction);
+        });
+        animator.addListener(new AnimatorListenerAdapter() {
+            @Override
+            public void onAnimationEnd(Animator animation) {
+                if (expanding) {
+                    navigationPanel.getLayoutParams().height = ViewGroup.LayoutParams.WRAP_CONTENT;
+                    navigationPanel.setAlpha(1f);
+                } else {
+                    navigationPanel.setVisibility(View.GONE);
+                }
+            }
+        });
+        animator.start();
+    }
+
+    private void buildDrawerLayer() {
+        drawerScrim = new View(this);
+        drawerScrim.setBackgroundColor(Color.argb(150, 0, 0, 0));
+        drawerScrim.setAlpha(0f);
+        drawerScrim.setVisibility(View.GONE);
+        drawerScrim.setOnClickListener(view -> closeDrawer(null));
+        root.addView(drawerScrim, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+        ));
+
+        drawer = new LinearLayout(this);
+        drawer.setOrientation(LinearLayout.VERTICAL);
+        drawer.setBackgroundColor(panel);
+        drawer.setElevation(dp(14));
+
+        int drawerWidth = Math.min(dp(340), Math.round(getResources().getDisplayMetrics().widthPixels * 0.86f));
+        FrameLayout.LayoutParams drawerParams = new FrameLayout.LayoutParams(
+                drawerWidth,
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                Gravity.START
+        );
+        root.addView(drawer, drawerParams);
+
+        LinearLayout drawerHeader = new LinearLayout(this);
+        drawerHeader.setOrientation(LinearLayout.HORIZONTAL);
+        drawerHeader.setGravity(Gravity.CENTER_VERTICAL);
+        drawerHeader.setPadding(dp(18), dp(12), dp(12), dp(8));
+        TextView menuTitle = label("JLPT Kotoba", 21, ink, Typeface.BOLD);
+        drawerHeader.addView(menuTitle, new LinearLayout.LayoutParams(0, dp(48), 1));
+        Button close = button("×", false, false);
+        close.setTextSize(23);
+        close.setContentDescription("Close menu");
+        close.setOnClickListener(view -> closeDrawer(null));
+        drawerHeader.addView(close, new LinearLayout.LayoutParams(dp(46), dp(44)));
+        drawer.addView(drawerHeader);
+
+        ScrollView scroll = new ScrollView(this);
+        scroll.setFillViewport(true);
+        scroll.setClipToPadding(false);
+        LinearLayout menuContent = new LinearLayout(this);
+        menuContent.setOrientation(LinearLayout.VERTICAL);
+        menuContent.setPadding(dp(14), dp(4), dp(14), dp(24));
+        scroll.addView(menuContent, new ScrollView.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        ));
+        drawer.addView(scroll, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                0,
+                1
+        ));
+
+        menuContent.addView(drawerSectionLabel("STUDY"));
+        LinearLayout modes = new LinearLayout(this);
+        modes.setOrientation(LinearLayout.HORIZONTAL);
+        Button vocabulary = button("Vocabulary", "vocabulary".equals(currentMode), false);
+        vocabulary.setOnClickListener(view -> closeDrawer(() -> selectMode("vocabulary")));
+        modes.addView(vocabulary, weightedButtonParams(0, dp(4)));
+        Button flashcards = button("Flashcards", "flashcards".equals(currentMode), false);
+        flashcards.setOnClickListener(view -> closeDrawer(() -> selectMode("flashcards")));
+        modes.addView(flashcards, weightedButtonParams(dp(4), 0));
+        menuContent.addView(modes);
+
+        LinearLayout levels = new LinearLayout(this);
+        levels.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams levelsParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                dp(46)
+        );
+        levelsParams.setMargins(0, dp(8), 0, 0);
+        menuContent.addView(levels, levelsParams);
+        for (String level : LEVELS) {
+            Button item = button(level, level.equals(currentLevel), false);
+            item.setOnClickListener(view -> closeDrawer(() -> selectLevel(level)));
+            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, dp(44), 1);
+            params.setMargins(dp(2), 0, dp(2), 0);
+            levels.addView(item, params);
+        }
+
+        menuContent.addView(drawerSectionLabel("BROWSE BY KANA"));
+        Button allWords = drawerButton("All words", true);
+        allWords.setOnClickListener(view -> closeDrawer(() -> jumpToKana(null)));
+        menuContent.addView(allWords, drawerItemParams(0));
+
+        Set<String> available = availableKana();
+        for (String[] kanaRow : KANA_ROWS) {
+            String groupKana = kanaRow[0];
+            boolean rowAvailable = false;
+            for (String kana : kanaRow) {
+                rowAvailable |= available.contains(kana);
+            }
+
+            Button group = drawerButton(groupKana + " row  "
+                    + (expandedKanaGroups.contains(groupKana) ? "⌃" : "⌄"), rowAvailable);
+            menuContent.addView(group, drawerItemParams(dp(6)));
+
+            LinearLayout children = new LinearLayout(this);
+            children.setOrientation(LinearLayout.VERTICAL);
+            children.setPadding(dp(12), 0, 0, 0);
+            for (String kana : kanaRow) {
+                boolean childAvailable = available.contains(kana);
+                Button child = drawerButton(kana + "     " + kanaRomaji(kana), childAvailable);
+                child.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
+                child.setTypeface(Typeface.DEFAULT, kana.equals(activeKana) ? Typeface.BOLD : Typeface.NORMAL);
+                if (kana.equals(activeKana)) {
+                    child.setBackground(roundedBackground(accent, accent, 9));
+                    child.setTextColor(Color.rgb(255, 247, 237));
+                }
+                child.setOnClickListener(view -> {
+                    if (childAvailable) {
+                        closeDrawer(() -> jumpToKana(kana));
+                    }
+                });
+                children.addView(child, drawerItemParams(dp(4)));
+            }
+            children.setVisibility(expandedKanaGroups.contains(groupKana) ? View.VISIBLE : View.GONE);
+            menuContent.addView(children);
+
+            boolean finalRowAvailable = rowAvailable;
+            group.setOnClickListener(view -> {
+                if (finalRowAvailable) {
+                    toggleKanaGroup(groupKana, group, children);
+                }
+            });
+        }
+
+        drawer.setTranslationX(-drawerWidth);
+        drawer.setVisibility(View.INVISIBLE);
+    }
+
+    private TextView drawerSectionLabel(String text) {
+        TextView section = label(text, 11, muted, Typeface.BOLD);
+        section.setLetterSpacing(0.12f);
+        section.setPadding(dp(4), dp(18), 0, dp(8));
+        return section;
+    }
+
+    private Button drawerButton(String text, boolean enabled) {
+        Button item = button(text, false, false);
+        item.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
+        item.setEnabled(enabled);
+        item.setAlpha(enabled ? 1f : 0.42f);
+        return item;
+    }
+
+    private LinearLayout.LayoutParams drawerItemParams(int topMargin) {
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                dp(44)
+        );
+        params.setMargins(0, topMargin, 0, 0);
+        return params;
+    }
+
+    private void toggleKanaGroup(String groupKana, Button group, LinearLayout children) {
+        boolean expanding = !expandedKanaGroups.contains(groupKana);
+        if (expanding) {
+            expandedKanaGroups.add(groupKana);
+        } else {
+            expandedKanaGroups.remove(groupKana);
+        }
+        group.setText(groupKana + " row  " + (expanding ? "⌃" : "⌄"));
+
+        int targetHeight = children.getChildCount() * dp(48);
+        int startHeight = expanding ? 0 : Math.max(children.getHeight(), targetHeight);
+        int endHeight = expanding ? targetHeight : 0;
+        if (expanding) {
+            children.setVisibility(View.VISIBLE);
+            children.setAlpha(0f);
+        }
+        ValueAnimator animator = ValueAnimator.ofInt(startHeight, endHeight);
+        animator.setDuration(220);
+        animator.setInterpolator(new DecelerateInterpolator());
+        animator.addUpdateListener(value -> {
+            ViewGroup.LayoutParams params = children.getLayoutParams();
+            params.height = (int) value.getAnimatedValue();
+            children.setLayoutParams(params);
+            float fraction = value.getAnimatedFraction();
+            children.setAlpha(expanding ? fraction : 1f - fraction);
+        });
+        animator.addListener(new AnimatorListenerAdapter() {
+            @Override
+            public void onAnimationEnd(Animator animation) {
+                if (expanding) {
+                    children.getLayoutParams().height = ViewGroup.LayoutParams.WRAP_CONTENT;
+                    children.setAlpha(1f);
+                } else {
+                    children.setVisibility(View.GONE);
+                    children.getLayoutParams().height = ViewGroup.LayoutParams.WRAP_CONTENT;
+                }
+            }
+        });
+        animator.start();
+    }
+
+    private void openDrawer() {
+        if (drawerOpen || drawer == null) {
+            return;
+        }
+        hideKeyboard();
+        drawerOpen = true;
+        drawerScrim.setVisibility(View.VISIBLE);
+        drawer.setVisibility(View.VISIBLE);
+        drawer.bringToFront();
+        drawerScrim.bringToFront();
+        drawer.bringToFront();
+        drawerScrim.animate().alpha(1f).setDuration(220).start();
+        drawer.animate()
+                .translationX(0f)
+                .setDuration(260)
+                .setInterpolator(new DecelerateInterpolator())
+                .start();
+    }
+
+    private void closeDrawer(Runnable afterClose) {
+        if (!drawerOpen || drawer == null) {
+            if (afterClose != null) {
+                afterClose.run();
+            }
+            return;
+        }
+        drawerOpen = false;
+        drawerScrim.animate().alpha(0f).setDuration(180).start();
+        drawer.animate()
+                .translationX(-drawer.getWidth())
+                .setDuration(220)
+                .setInterpolator(new DecelerateInterpolator())
+                .withEndAction(() -> {
+                    drawer.setVisibility(View.INVISIBLE);
+                    drawerScrim.setVisibility(View.GONE);
+                    if (afterClose != null) {
+                        afterClose.run();
+                    }
+                })
+                .start();
+    }
+
+    private void installSystemBarInsets() {
+        root.setOnApplyWindowInsetsListener((view, insets) -> {
+            int topInset;
+            int bottomInset;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                android.graphics.Insets bars = insets.getInsets(WindowInsets.Type.systemBars());
+                topInset = bars.top;
+                bottomInset = bars.bottom;
+            } else {
+                topInset = insets.getSystemWindowInsetTop();
+                bottomInset = insets.getSystemWindowInsetBottom();
+            }
+            topChrome.setPadding(0, topInset, 0, 0);
+            mainColumn.setPadding(0, 0, 0, bottomInset);
+            drawer.setPadding(0, topInset, 0, bottomInset);
+            return insets;
+        });
+        root.requestApplyInsets();
+    }
+
+    private void registerBackHandler() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
+                    OnBackInvokedDispatcher.PRIORITY_DEFAULT,
+                    () -> {
+                        if (drawerOpen) {
+                            closeDrawer(null);
+                        } else {
+                            finishAfterTransition();
+                        }
+                    }
+            );
+        }
+    }
+
+    @SuppressLint("GestureBackNavigation")
+    @SuppressWarnings("deprecation")
+    @Override
+    public void onBackPressed() {
+        if (drawerOpen) {
+            closeDrawer(null);
+        } else {
+            super.onBackPressed();
+        }
+    }
+
     private void selectMode(String mode) {
         if (mode.equals(currentMode)) {
             return;
@@ -222,8 +648,99 @@ public final class MainActivity extends Activity {
         buildInterface();
     }
 
+    private void jumpToKana(String kana) {
+        activeKana = kana;
+        searchQuery = "";
+        if (!"vocabulary".equals(currentMode)) {
+            currentMode = "vocabulary";
+            preferences.edit().putString(PREF_MODE, currentMode).apply();
+        }
+        buildInterface();
+        if (vocabularyList == null || wordAdapter == null) {
+            return;
+        }
+        vocabularyList.post(() -> {
+            int position = kana == null ? 0 : wordAdapter.positionForKana(kana);
+            if (position >= 0) {
+                vocabularyList.setSelection(position);
+            }
+        });
+    }
+
+    private Set<String> availableKana() {
+        Set<String> available = new HashSet<>();
+        for (Word word : repository.words(currentLevel)) {
+            String kana = normalizedFirstKana(word.furigana);
+            if (kana != null) {
+                available.add(kana);
+            }
+        }
+        return available;
+    }
+
+    private String kanaRomaji(String kana) {
+        for (int rowIndex = 0; rowIndex < KANA_ROWS.length; rowIndex++) {
+            for (int columnIndex = 0; columnIndex < KANA_ROWS[rowIndex].length; columnIndex++) {
+                if (KANA_ROWS[rowIndex][columnIndex].equals(kana)) {
+                    return KANA_ROMAJI_ROWS[rowIndex][columnIndex];
+                }
+            }
+        }
+        return kana;
+    }
+
+    private String normalizedFirstKana(String reading) {
+        if (reading == null || reading.trim().isEmpty()) {
+            return null;
+        }
+        char kana = reading.trim().charAt(0);
+        if (kana >= 'ァ' && kana <= 'ヶ') {
+            kana = (char) (kana - 0x60);
+        }
+        String variants = "ぁぃぅぇぉゃゅょっがぎぐげござじずぜぞだぢづでどばびぶべぼぱぴぷぺぽゔ";
+        String normalized = "あいうえおやゆよつかきくけこさしすせそたちつてとはひふへほはひふへほう";
+        int variantIndex = variants.indexOf(kana);
+        if (variantIndex >= 0) {
+            kana = normalized.charAt(variantIndex);
+        }
+        return String.valueOf(kana);
+    }
+
+    private int kanaOrderIndex(String kana) {
+        int position = 0;
+        for (String[] row : KANA_ROWS) {
+            for (String candidate : row) {
+                if (candidate.equals(kana)) {
+                    return position;
+                }
+                position++;
+            }
+        }
+        return Integer.MAX_VALUE;
+    }
+
+    private String[] kanaGroup(String kana) {
+        for (String[] row : KANA_ROWS) {
+            for (String candidate : row) {
+                if (candidate.equals(kana)) {
+                    return row;
+                }
+            }
+        }
+        return null;
+    }
+
     private void renderVocabulary() {
         List<Word> allWords = repository.words(currentLevel);
+        allWords.sort((left, right) -> {
+            int kanaOrder = Integer.compare(
+                    kanaOrderIndex(normalizedFirstKana(left.furigana)),
+                    kanaOrderIndex(normalizedFirstKana(right.furigana))
+            );
+            return kanaOrder != 0
+                    ? kanaOrder
+                    : left.furigana.compareToIgnoreCase(right.furigana);
+        });
 
         LinearLayout heading = new LinearLayout(this);
         heading.setOrientation(LinearLayout.HORIZONTAL);
@@ -302,6 +819,9 @@ public final class MainActivity extends Activity {
 
         vocabularyList.setOnItemLongClickListener((parent, view, position, id) -> {
             Word selected = wordAdapter.getItem(position);
+            if (selected == null) {
+                return true;
+            }
             if (!selected.custom) {
                 Toast.makeText(this, "Bundled words cannot be deleted.", Toast.LENGTH_SHORT).show();
                 return true;
@@ -329,7 +849,9 @@ public final class MainActivity extends Activity {
         }
         wordAdapter = new WordAdapter(filtered);
         vocabularyList.setAdapter(wordAdapter);
-        vocabularyCount.setText(filtered.isEmpty() ? "Coming soon" : filtered.size() + " words");
+        vocabularyCount.setText(filtered.isEmpty()
+                ? (allWords.isEmpty() ? "Coming soon" : "0 matches")
+                : filtered.size() + " words");
     }
 
     private void renderFlashcards() {
@@ -354,6 +876,20 @@ public final class MainActivity extends Activity {
         );
         progressParams.setMargins(0, dp(12), 0, dp(8));
         content.addView(progress, progressParams);
+
+        ProgressBar progressBar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+        progressBar.setMax(Math.max(1, available.size()));
+        progressBar.setProgress(flashDeck.isEmpty()
+                ? 0
+                : (flashComplete ? flashDeck.size() : Math.max(1, flashIndex + 1)));
+        progressBar.setProgressTintList(ColorStateList.valueOf(accent));
+        progressBar.setProgressBackgroundTintList(ColorStateList.valueOf(line));
+        LinearLayout.LayoutParams barParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                dp(7)
+        );
+        barParams.setMargins(0, 0, 0, dp(10));
+        content.addView(progressBar, barParams);
 
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
@@ -420,40 +956,60 @@ public final class MainActivity extends Activity {
 
     private void populateCard(LinearLayout card, List<Word> available) {
         if (available.isEmpty()) {
-            card.addView(label("JLPT " + currentLevel, 34, ink, Typeface.BOLD));
-            card.addView(spacedLabel("Coming soon", 17, muted, Typeface.NORMAL, 10));
+            addCardLabel(card, "JLPT " + currentLevel, 34, ink, Typeface.BOLD, 0);
+            addCardLabel(card, "Coming soon", 17, muted, Typeface.NORMAL, 10);
             return;
         }
         if (flashDeck.isEmpty()) {
-            card.addView(label("JLPT " + currentLevel, 34, ink, Typeface.BOLD));
-            card.addView(spacedLabel("Ready", 18, muted, Typeface.NORMAL, 10));
-            card.addView(spacedLabel(available.size() + " cards", 14, muted, Typeface.NORMAL, 5));
+            addCardLabel(card, "JLPT " + currentLevel, 34, ink, Typeface.BOLD, 0);
+            addCardLabel(card, "Ready", 18, muted, Typeface.NORMAL, 10);
+            addCardLabel(card, available.size() + " cards", 14, muted, Typeface.NORMAL, 5);
             return;
         }
         if (flashComplete) {
-            card.addView(label("Deck completed!", 31, ink, Typeface.BOLD));
-            card.addView(spacedLabel(
+            addCardLabel(card, "Deck completed!", 31, ink, Typeface.BOLD, 0);
+            addCardLabel(
+                    card,
                     "You finished all " + flashDeck.size() + " flashcards.",
                     17,
                     muted,
                     Typeface.NORMAL,
                     12
-            ));
+            );
             return;
         }
 
         Word word = flashDeck.get(flashIndex);
         String front = word.kanji.isEmpty() ? word.furigana : word.kanji;
-        card.addView(label(front, 42, ink, Typeface.BOLD));
+        addCardLabel(card, front, 42, ink, Typeface.BOLD, 0);
         if (flashAnswerVisible) {
             if (!word.kanji.isEmpty()) {
-                card.addView(spacedLabel(word.furigana, 24, ink, Typeface.NORMAL, 14));
+                addCardLabel(card, word.furigana, 24, ink, Typeface.NORMAL, 14);
             }
-            card.addView(spacedLabel(word.romaji, 18, muted, Typeface.NORMAL, 8));
-            card.addView(spacedLabel(word.meaning, 21, ink, Typeface.BOLD, 12));
+            addCardLabel(card, word.romaji, 18, muted, Typeface.NORMAL, 8);
+            addCardLabel(card, word.meaning, 21, ink, Typeface.BOLD, 12);
         } else {
-            card.addView(spacedLabel("Tap to reveal", 15, muted, Typeface.NORMAL, 14));
+            addCardLabel(card, "Tap to reveal", 15, muted, Typeface.NORMAL, 14);
         }
+    }
+
+    private void addCardLabel(
+            LinearLayout card,
+            String text,
+            float size,
+            int color,
+            int style,
+            int topMargin
+    ) {
+        TextView item = label(text, size, color, style);
+        item.setGravity(Gravity.CENTER);
+        item.setTextAlignment(View.TEXT_ALIGNMENT_CENTER);
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        params.setMargins(0, dp(topMargin), 0, 0);
+        card.addView(item, params);
     }
 
     private void handleCardTap(List<Word> available) {
@@ -662,9 +1218,24 @@ public final class MainActivity extends Activity {
         Window window = getWindow();
         window.setStatusBarColor(topbar);
         window.setNavigationBarColor(paper);
-        window.getDecorView().setSystemUiVisibility(
-                darkMode ? 0 : View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
-        );
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            window.setDecorFitsSystemWindows(false);
+            WindowInsetsController controller = window.getInsetsController();
+            if (controller != null) {
+                controller.setSystemBarsAppearance(
+                        darkMode ? 0 : WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS,
+                        WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
+                );
+            }
+        } else {
+            int flags = View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                    | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                    | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION;
+            if (!darkMode) {
+                flags |= View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
+            }
+            window.getDecorView().setSystemUiVisibility(flags);
+        }
     }
 
     private Button button(String text, boolean active, boolean segmented) {
@@ -754,21 +1325,54 @@ public final class MainActivity extends Activity {
         setContentView(message);
     }
 
+    private static final int VOCAB_GROUP = 0;
+    private static final int VOCAB_SECTION = 1;
+    private static final int VOCAB_WORD = 2;
+
+    private final class VocabularyItem {
+        final int kind;
+        final Word word;
+        final String kana;
+        final String[] kanaRow;
+
+        VocabularyItem(int kind, Word word, String kana, String[] kanaRow) {
+            this.kind = kind;
+            this.word = word;
+            this.kana = kana;
+            this.kanaRow = kanaRow;
+        }
+    }
+
     private final class WordAdapter extends BaseAdapter {
-        private final List<Word> words;
+        private final List<VocabularyItem> items = new ArrayList<>();
 
         WordAdapter(List<Word> words) {
-            this.words = words;
+            String previousGroup = null;
+            String previousKana = null;
+            for (Word word : words) {
+                String kana = normalizedFirstKana(word.furigana);
+                String[] kanaRow = kanaGroup(kana);
+                String group = kanaRow == null ? null : kanaRow[0];
+                if (group != null && !group.equals(previousGroup)) {
+                    items.add(new VocabularyItem(VOCAB_GROUP, null, group, kanaRow));
+                    previousGroup = group;
+                }
+                if (kana != null && !kana.equals(previousKana)) {
+                    items.add(new VocabularyItem(VOCAB_SECTION, null, kana, kanaRow));
+                    previousKana = kana;
+                }
+                items.add(new VocabularyItem(VOCAB_WORD, word, kana, kanaRow));
+            }
         }
 
         @Override
         public int getCount() {
-            return words.size();
+            return items.size();
         }
 
         @Override
         public Word getItem(int position) {
-            return words.get(position);
+            return items.get(position).word;
         }
 
         @Override
@@ -777,8 +1381,99 @@ public final class MainActivity extends Activity {
         }
 
         @Override
+        public int getViewTypeCount() {
+            return 3;
+        }
+
+        @Override
+        public int getItemViewType(int position) {
+            return items.get(position).kind;
+        }
+
+        @Override
+        public boolean areAllItemsEnabled() {
+            return false;
+        }
+
+        @Override
+        public boolean isEnabled(int position) {
+            return items.get(position).kind == VOCAB_WORD;
+        }
+
+        int positionForKana(String kana) {
+            for (int index = 0; index < items.size(); index++) {
+                VocabularyItem item = items.get(index);
+                if (item.kind == VOCAB_SECTION && kana.equals(item.kana)) {
+                    return index;
+                }
+            }
+            return -1;
+        }
+
+        @Override
         public View getView(int position, View convertView, ViewGroup parent) {
-            Word word = getItem(position);
+            VocabularyItem item = items.get(position);
+            if (item.kind == VOCAB_GROUP) {
+                return buildKanaGroupRow(item.kanaRow);
+            }
+            if (item.kind == VOCAB_SECTION) {
+                return buildKanaSectionRow(item.kana);
+            }
+            return buildWordRow(item.word);
+        }
+
+        private View buildKanaGroupRow(String[] kanaRow) {
+            LinearLayout section = new LinearLayout(MainActivity.this);
+            section.setOrientation(LinearLayout.VERTICAL);
+            section.setPadding(dp(12), dp(15), dp(12), dp(10));
+            section.setBackgroundColor(paper);
+            section.addView(label(kanaRow[0] + " row", 15, accent, Typeface.BOLD));
+
+            LinearLayout miniTable = new LinearLayout(MainActivity.this);
+            miniTable.setOrientation(LinearLayout.HORIZONTAL);
+            LinearLayout.LayoutParams miniParams = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    dp(42)
+            );
+            miniParams.setMargins(0, dp(7), 0, 0);
+            section.addView(miniTable, miniParams);
+
+            Set<String> available = availableKana();
+            for (String kana : kanaRow) {
+                TextView cell = label(kana, 17, available.contains(kana) ? ink : muted, Typeface.BOLD);
+                cell.setGravity(Gravity.CENTER);
+                cell.setAlpha(available.contains(kana) ? 1f : 0.38f);
+                cell.setBackground(roundedBackground(panel, line, 7));
+                if (available.contains(kana)) {
+                    cell.setOnClickListener(view -> jumpToKana(kana));
+                }
+                LinearLayout.LayoutParams cellParams = new LinearLayout.LayoutParams(0, dp(40), 1);
+                cellParams.setMargins(dp(2), 0, dp(2), 0);
+                miniTable.addView(cell, cellParams);
+            }
+            return section;
+        }
+
+        private View buildKanaSectionRow(String kana) {
+            LinearLayout section = new LinearLayout(MainActivity.this);
+            section.setOrientation(LinearLayout.VERTICAL);
+            section.setPadding(dp(15), dp(11), dp(15), dp(9));
+            section.setBackgroundColor(darkMode ? Color.rgb(45, 27, 38) : Color.rgb(255, 241, 232));
+
+            TextView title = label(kana + "   " + kanaRomaji(kana), 19, accent, Typeface.BOLD);
+            section.addView(title);
+            TextView columns = label("WORD   ·   READING   ·   MEANING", 10, muted, Typeface.BOLD);
+            columns.setLetterSpacing(0.08f);
+            LinearLayout.LayoutParams columnsParams = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+            );
+            columnsParams.setMargins(0, dp(4), 0, 0);
+            section.addView(columns, columnsParams);
+            return section;
+        }
+
+        private View buildWordRow(Word word) {
             LinearLayout row = new LinearLayout(MainActivity.this);
             row.setOrientation(LinearLayout.VERTICAL);
             row.setPadding(dp(16), dp(12), dp(16), dp(12));
@@ -803,7 +1498,9 @@ public final class MainActivity extends Activity {
             String reading = word.kanji.isEmpty()
                     ? word.romaji
                     : word.furigana + "  •  " + word.romaji;
-            row.addView(spacedLabel(reading, 14, muted, Typeface.NORMAL, 4));
+            TextView readingLabel = spacedLabel(reading, 14, muted, Typeface.NORMAL, 4);
+            readingLabel.setGravity(Gravity.START);
+            row.addView(readingLabel);
 
             TextView meaning = spacedLabel(word.meaning, 16, ink, Typeface.NORMAL, 6);
             meaning.setGravity(Gravity.START);

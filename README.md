@@ -18,8 +18,10 @@ Both apps work locally. No account, internet permission, analytics, or cloud sto
 ## Android features
 
 - Vocabulary browsing and full-text search
+- Grouped kana sections with expandable あ–ん navigation
+- Animated slide-out menu and collapsible top navigation
 - N5–N1 level selector
-- Flashcard decks with automatic progress saving
+- Centered flashcard decks with a visual progress bar and automatic saving
 - Light and dark themes
 - CSV vocabulary importing
 - Long-press deletion for imported custom words
