@@ -31,7 +31,7 @@ import android.widget.BaseAdapter;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.FrameLayout;
-import android.widget.HorizontalScrollView;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ListView;
 import android.widget.ProgressBar;
@@ -84,7 +84,6 @@ public final class MainActivity extends Activity {
     private static final String PREF_DARK_MODE = "dark_mode";
     private static final String PREF_LEVEL = "current_level";
     private static final String PREF_MODE = "current_mode";
-    private static final String PREF_HEADER_EXPANDED = "header_expanded";
 
     private SharedPreferences preferences;
     private VocabularyRepository repository;
@@ -96,12 +95,9 @@ public final class MainActivity extends Activity {
     private FrameLayout root;
     private LinearLayout mainColumn;
     private LinearLayout topChrome;
-    private LinearLayout navigationPanel;
     private LinearLayout content;
-    private Button collapseButton;
     private View drawerScrim;
     private LinearLayout drawer;
-    private boolean headerExpanded = true;
     private boolean drawerOpen;
     private final Set<String> expandedKanaGroups = new HashSet<>();
     private String activeKana;
@@ -131,7 +127,6 @@ public final class MainActivity extends Activity {
         darkMode = preferences.getBoolean(PREF_DARK_MODE, false);
         currentLevel = preferences.getString(PREF_LEVEL, "N5");
         currentMode = preferences.getString(PREF_MODE, "vocabulary");
-        headerExpanded = preferences.getBoolean(PREF_HEADER_EXPANDED, true);
         if (!isLevel(currentLevel)) {
             currentLevel = "N5";
         }
@@ -168,22 +163,6 @@ public final class MainActivity extends Activity {
         topChrome.setOrientation(LinearLayout.VERTICAL);
         topChrome.setBackgroundColor(topbar);
         topChrome.addView(buildToolbar(), new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-        ));
-        navigationPanel = new LinearLayout(this);
-        navigationPanel.setOrientation(LinearLayout.VERTICAL);
-        navigationPanel.setBackgroundColor(topbar);
-        navigationPanel.addView(buildModeSelector(), new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-        ));
-        navigationPanel.addView(buildLevelSelector(), new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                dp(58)
-        ));
-        navigationPanel.setVisibility(headerExpanded ? View.VISIBLE : View.GONE);
-        topChrome.addView(navigationPanel, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
         ));
@@ -243,104 +222,7 @@ public final class MainActivity extends Activity {
         });
         LinearLayout.LayoutParams themeParams = new LinearLayout.LayoutParams(dp(72), dp(44));
         toolbar.addView(theme, themeParams);
-
-        collapseButton = button(headerExpanded ? "⌃" : "⌄", false, true);
-        collapseButton.setTextSize(20);
-        collapseButton.setContentDescription(headerExpanded ? "Collapse navigation" : "Expand navigation");
-        collapseButton.setOnClickListener(view -> toggleHeader());
-        LinearLayout.LayoutParams collapseParams = new LinearLayout.LayoutParams(dp(46), dp(44));
-        collapseParams.setMargins(dp(6), 0, 0, 0);
-        toolbar.addView(collapseButton, collapseParams);
         return toolbar;
-    }
-
-    private View buildModeSelector() {
-        LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setPadding(dp(16), dp(10), dp(16), dp(4));
-        row.setBackgroundColor(topbar);
-
-        Button vocabulary = button("Vocabulary", "vocabulary".equals(currentMode), true);
-        vocabulary.setOnClickListener(view -> selectMode("vocabulary"));
-        row.addView(vocabulary, weightedButtonParams(0, dp(4)));
-
-        Button flashcards = button("Flashcards", "flashcards".equals(currentMode), true);
-        flashcards.setOnClickListener(view -> selectMode("flashcards"));
-        row.addView(flashcards, weightedButtonParams(dp(4), 0));
-        return row;
-    }
-
-    private View buildLevelSelector() {
-        HorizontalScrollView scroll = new HorizontalScrollView(this);
-        scroll.setFillViewport(true);
-        scroll.setHorizontalScrollBarEnabled(false);
-        scroll.setBackgroundColor(topbar);
-
-        LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setGravity(Gravity.CENTER);
-        row.setPadding(dp(12), dp(4), dp(12), dp(9));
-
-        for (String level : LEVELS) {
-            Button item = button(level, level.equals(currentLevel), true);
-            item.setOnClickListener(view -> selectLevel(level));
-            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(dp(68), dp(42));
-            params.setMargins(dp(3), 0, dp(3), 0);
-            row.addView(item, params);
-        }
-        scroll.addView(row);
-        return scroll;
-    }
-
-    private void toggleHeader() {
-        if (navigationPanel == null || collapseButton == null) {
-            return;
-        }
-
-        boolean expanding = !headerExpanded;
-        headerExpanded = expanding;
-        preferences.edit().putBoolean(PREF_HEADER_EXPANDED, headerExpanded).apply();
-        collapseButton.setText(expanding ? "⌃" : "⌄");
-        collapseButton.setContentDescription(expanding ? "Collapse navigation" : "Expand navigation");
-
-        int startHeight = navigationPanel.getHeight();
-        int targetHeight;
-        if (expanding) {
-            navigationPanel.setVisibility(View.VISIBLE);
-            navigationPanel.getLayoutParams().height = ViewGroup.LayoutParams.WRAP_CONTENT;
-            navigationPanel.measure(
-                    View.MeasureSpec.makeMeasureSpec(Math.max(1, root.getWidth()), View.MeasureSpec.EXACTLY),
-                    View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
-            );
-            targetHeight = navigationPanel.getMeasuredHeight();
-            navigationPanel.getLayoutParams().height = 0;
-            navigationPanel.setAlpha(0f);
-        } else {
-            targetHeight = 0;
-        }
-
-        ValueAnimator animator = ValueAnimator.ofInt(startHeight, targetHeight);
-        animator.setDuration(240);
-        animator.setInterpolator(new DecelerateInterpolator());
-        animator.addUpdateListener(value -> {
-            ViewGroup.LayoutParams params = navigationPanel.getLayoutParams();
-            params.height = (int) value.getAnimatedValue();
-            navigationPanel.setLayoutParams(params);
-            float fraction = value.getAnimatedFraction();
-            navigationPanel.setAlpha(expanding ? fraction : 1f - fraction);
-        });
-        animator.addListener(new AnimatorListenerAdapter() {
-            @Override
-            public void onAnimationEnd(Animator animation) {
-                if (expanding) {
-                    navigationPanel.getLayoutParams().height = ViewGroup.LayoutParams.WRAP_CONTENT;
-                    navigationPanel.setAlpha(1f);
-                } else {
-                    navigationPanel.setVisibility(View.GONE);
-                }
-            }
-        });
-        animator.start();
     }
 
     private void buildDrawerLayer() {
@@ -436,8 +318,23 @@ public final class MainActivity extends Activity {
                 rowAvailable |= available.contains(kana);
             }
 
-            Button group = drawerButton(groupKana + " row  "
-                    + (expandedKanaGroups.contains(groupKana) ? "⌃" : "⌄"), rowAvailable);
+            LinearLayout group = new LinearLayout(this);
+            group.setOrientation(LinearLayout.HORIZONTAL);
+            group.setGravity(Gravity.CENTER_VERTICAL);
+            group.setPadding(dp(14), 0, dp(10), 0);
+            group.setBackground(roundedBackground(panel, line, 9));
+            group.setAlpha(rowAvailable ? 1f : 0.42f);
+            group.setEnabled(rowAvailable);
+            group.setContentDescription(groupKana + " row");
+
+            TextView groupLabel = label(groupKana + " row", 14, ink, Typeface.BOLD);
+            group.addView(groupLabel, new LinearLayout.LayoutParams(0, dp(44), 1));
+
+            ImageView chevron = new ImageView(this);
+            chevron.setImageResource(R.drawable.ic_chevron_down);
+            chevron.setColorFilter(ink);
+            chevron.setRotation(expandedKanaGroups.contains(groupKana) ? 180f : 0f);
+            group.addView(chevron, new LinearLayout.LayoutParams(dp(28), dp(28)));
             menuContent.addView(group, drawerItemParams(dp(6)));
 
             LinearLayout children = new LinearLayout(this);
@@ -465,7 +362,7 @@ public final class MainActivity extends Activity {
             boolean finalRowAvailable = rowAvailable;
             group.setOnClickListener(view -> {
                 if (finalRowAvailable) {
-                    toggleKanaGroup(groupKana, group, children);
+                    toggleKanaGroup(groupKana, chevron, children);
                 }
             });
         }
@@ -498,14 +395,18 @@ public final class MainActivity extends Activity {
         return params;
     }
 
-    private void toggleKanaGroup(String groupKana, Button group, LinearLayout children) {
+    private void toggleKanaGroup(String groupKana, ImageView chevron, LinearLayout children) {
         boolean expanding = !expandedKanaGroups.contains(groupKana);
         if (expanding) {
             expandedKanaGroups.add(groupKana);
         } else {
             expandedKanaGroups.remove(groupKana);
         }
-        group.setText(groupKana + " row  " + (expanding ? "⌃" : "⌄"));
+        chevron.animate()
+                .rotation(expanding ? 180f : 0f)
+                .setDuration(220)
+                .setInterpolator(new DecelerateInterpolator())
+                .start();
 
         int targetHeight = children.getChildCount() * dp(48);
         int startHeight = expanding ? 0 : Math.max(children.getHeight(), targetHeight);
@@ -717,17 +618,6 @@ public final class MainActivity extends Activity {
             }
         }
         return Integer.MAX_VALUE;
-    }
-
-    private String[] kanaGroup(String kana) {
-        for (String[] row : KANA_ROWS) {
-            for (String candidate : row) {
-                if (candidate.equals(kana)) {
-                    return row;
-                }
-            }
-        }
-        return null;
     }
 
     private void renderVocabulary() {
@@ -1326,21 +1216,18 @@ public final class MainActivity extends Activity {
         setContentView(message);
     }
 
-    private static final int VOCAB_GROUP = 0;
-    private static final int VOCAB_SECTION = 1;
-    private static final int VOCAB_WORD = 2;
+    private static final int VOCAB_SECTION = 0;
+    private static final int VOCAB_WORD = 1;
 
     private final class VocabularyItem {
         final int kind;
         final Word word;
         final String kana;
-        final String[] kanaRow;
 
-        VocabularyItem(int kind, Word word, String kana, String[] kanaRow) {
+        VocabularyItem(int kind, Word word, String kana) {
             this.kind = kind;
             this.word = word;
             this.kana = kana;
-            this.kanaRow = kanaRow;
         }
     }
 
@@ -1348,21 +1235,14 @@ public final class MainActivity extends Activity {
         private final List<VocabularyItem> items = new ArrayList<>();
 
         WordAdapter(List<Word> words) {
-            String previousGroup = null;
             String previousKana = null;
             for (Word word : words) {
                 String kana = normalizedFirstKana(word.furigana);
-                String[] kanaRow = kanaGroup(kana);
-                String group = kanaRow == null ? null : kanaRow[0];
-                if (group != null && !group.equals(previousGroup)) {
-                    items.add(new VocabularyItem(VOCAB_GROUP, null, group, kanaRow));
-                    previousGroup = group;
-                }
                 if (kana != null && !kana.equals(previousKana)) {
-                    items.add(new VocabularyItem(VOCAB_SECTION, null, kana, kanaRow));
+                    items.add(new VocabularyItem(VOCAB_SECTION, null, kana));
                     previousKana = kana;
                 }
-                items.add(new VocabularyItem(VOCAB_WORD, word, kana, kanaRow));
+                items.add(new VocabularyItem(VOCAB_WORD, word, kana));
             }
         }
 
@@ -1383,7 +1263,7 @@ public final class MainActivity extends Activity {
 
         @Override
         public int getViewTypeCount() {
-            return 3;
+            return 2;
         }
 
         @Override
@@ -1414,99 +1294,85 @@ public final class MainActivity extends Activity {
         @Override
         public View getView(int position, View convertView, ViewGroup parent) {
             VocabularyItem item = items.get(position);
-            if (item.kind == VOCAB_GROUP) {
-                return buildKanaGroupRow(item.kanaRow);
-            }
             if (item.kind == VOCAB_SECTION) {
-                return buildKanaSectionRow(item.kana);
+                return buildKanaSectionRow(item.kana, position == 0);
             }
-            return buildWordRow(item.word);
+            return buildWordRow(item.word, position);
         }
 
-        private View buildKanaGroupRow(String[] kanaRow) {
+        private View buildKanaSectionRow(String kana, boolean firstSection) {
             LinearLayout section = new LinearLayout(MainActivity.this);
             section.setOrientation(LinearLayout.VERTICAL);
-            section.setPadding(dp(12), dp(15), dp(12), dp(10));
+            section.setPadding(dp(8), firstSection ? dp(8) : dp(28), dp(8), 0);
             section.setBackgroundColor(paper);
-            section.addView(label(kanaRow[0] + " row", 15, accent, Typeface.BOLD));
-
-            LinearLayout miniTable = new LinearLayout(MainActivity.this);
-            miniTable.setOrientation(LinearLayout.HORIZONTAL);
-            LinearLayout.LayoutParams miniParams = new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    dp(42)
+            TextView title = label(
+                    kana,
+                    24,
+                    darkMode ? Color.rgb(255, 216, 200) : accent,
+                    Typeface.BOLD
             );
-            miniParams.setMargins(0, dp(7), 0, 0);
-            section.addView(miniTable, miniParams);
-
-            Set<String> available = availableKana();
-            for (String kana : kanaRow) {
-                TextView cell = label(kana, 17, available.contains(kana) ? ink : muted, Typeface.BOLD);
-                cell.setGravity(Gravity.CENTER);
-                cell.setAlpha(available.contains(kana) ? 1f : 0.38f);
-                cell.setBackground(roundedBackground(panel, line, 7));
-                if (available.contains(kana)) {
-                    cell.setOnClickListener(view -> jumpToKana(kana));
-                }
-                LinearLayout.LayoutParams cellParams = new LinearLayout.LayoutParams(0, dp(40), 1);
-                cellParams.setMargins(dp(2), 0, dp(2), 0);
-                miniTable.addView(cell, cellParams);
-            }
-            return section;
-        }
-
-        private View buildKanaSectionRow(String kana) {
-            LinearLayout section = new LinearLayout(MainActivity.this);
-            section.setOrientation(LinearLayout.VERTICAL);
-            section.setPadding(dp(15), dp(11), dp(15), dp(9));
-            section.setBackgroundColor(darkMode ? Color.rgb(45, 27, 38) : Color.rgb(255, 241, 232));
-
-            TextView title = label(kana + "   " + kanaRomaji(kana), 19, accent, Typeface.BOLD);
-            section.addView(title);
-            TextView columns = label("WORD   ·   READING   ·   MEANING", 10, muted, Typeface.BOLD);
-            columns.setLetterSpacing(0.08f);
-            LinearLayout.LayoutParams columnsParams = new LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams titleParams = new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.WRAP_CONTENT
             );
-            columnsParams.setMargins(0, dp(4), 0, 0);
-            section.addView(columns, columnsParams);
+            titleParams.setMargins(dp(2), 0, 0, dp(7));
+            section.addView(title, titleParams);
+
+            LinearLayout tableHeader = new LinearLayout(MainActivity.this);
+            tableHeader.setOrientation(LinearLayout.HORIZONTAL);
+            tableHeader.setGravity(Gravity.CENTER_VERTICAL);
+            tableHeader.setBackgroundColor(topbar);
+            tableHeader.setMinimumHeight(dp(38));
+            addTableCell(tableHeader, "Kanji", 0.85f, Color.rgb(255, 247, 237), Typeface.BOLD, 11);
+            addTableCell(tableHeader, "Furigana", 1.05f, Color.rgb(255, 247, 237), Typeface.BOLD, 11);
+            addTableCell(tableHeader, "Romaji", 0.85f, Color.rgb(255, 247, 237), Typeface.BOLD, 11);
+            addTableCell(tableHeader, "Meaning", 1.65f, Color.rgb(255, 247, 237), Typeface.BOLD, 11);
+            section.addView(tableHeader, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+            ));
             return section;
         }
 
-        private View buildWordRow(Word word) {
+        private View buildWordRow(Word word, int position) {
             LinearLayout row = new LinearLayout(MainActivity.this);
-            row.setOrientation(LinearLayout.VERTICAL);
-            row.setPadding(dp(16), dp(12), dp(16), dp(12));
-            row.setBackgroundColor(panel);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            row.setMinimumHeight(dp(58));
+            row.setBackgroundColor(position % 2 == 0
+                    ? panel
+                    : (darkMode ? Color.rgb(39, 27, 37) : Color.rgb(255, 247, 239)));
 
-            LinearLayout topLine = new LinearLayout(MainActivity.this);
-            topLine.setOrientation(LinearLayout.HORIZONTAL);
-            topLine.setGravity(Gravity.CENTER_VERTICAL);
-
-            String titleText = word.kanji.isEmpty() ? word.furigana : word.kanji;
-            TextView title = label(titleText, 21, ink, Typeface.BOLD);
-            topLine.addView(title, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-            if (word.custom) {
-                TextView badge = label("CUSTOM", 10, accent, Typeface.BOLD);
-                badge.setGravity(Gravity.CENTER);
-                badge.setPadding(dp(8), dp(3), dp(8), dp(3));
-                badge.setBackground(roundedBackground(darkMode ? Color.rgb(50, 21, 29) : Color.rgb(255, 241, 242), accent, 8));
-                topLine.addView(badge);
-            }
-            row.addView(topLine);
-
-            String reading = word.kanji.isEmpty()
-                    ? word.romaji
-                    : word.furigana + "  •  " + word.romaji;
-            TextView readingLabel = spacedLabel(reading, 14, muted, Typeface.NORMAL, 4);
-            readingLabel.setGravity(Gravity.START);
-            row.addView(readingLabel);
-
-            TextView meaning = spacedLabel(word.meaning, 16, ink, Typeface.NORMAL, 6);
-            meaning.setGravity(Gravity.START);
-            row.addView(meaning);
+            String kanji = word.kanji.isEmpty() ? "—" : word.kanji;
+            int kanjiColor = word.custom ? accent : ink;
+            addTableCell(row, kanji, 0.85f, kanjiColor, Typeface.BOLD, 14);
+            addTableCell(row, word.furigana, 1.05f, ink, Typeface.NORMAL, 13);
+            addTableCell(row, word.romaji, 0.85f, muted, Typeface.NORMAL, 12);
+            addTableCell(row, word.meaning, 1.65f, ink, Typeface.NORMAL, 13);
             return row;
+        }
+
+        private void addTableCell(
+                LinearLayout row,
+                String text,
+                float weight,
+                int color,
+                int style,
+                float size
+        ) {
+            if (row.getChildCount() > 0) {
+                View divider = new View(MainActivity.this);
+                divider.setBackgroundColor(line);
+                row.addView(divider, new LinearLayout.LayoutParams(dp(1), ViewGroup.LayoutParams.MATCH_PARENT));
+            }
+            TextView cell = label(text, size, color, style);
+            cell.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
+            cell.setPadding(dp(8), dp(8), dp(6), dp(8));
+            row.addView(cell, new LinearLayout.LayoutParams(
+                    0,
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    weight
+            ));
         }
     }
 }

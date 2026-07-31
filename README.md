@@ -18,8 +18,8 @@ Both apps work locally. No account, internet permission, analytics, or cloud sto
 ## Android features
 
 - Vocabulary browsing and full-text search
-- Grouped kana sections with expandable あ–ん navigation
-- Animated slide-out menu and collapsible top navigation
+- Clearly separated per-hiragana vocabulary tables
+- Animated slide-out menu with expandable あ–ん navigation
 - N5–N1 level selector
 - Centered flashcard decks with a visual progress bar and automatic saving
 - Light and dark themes
