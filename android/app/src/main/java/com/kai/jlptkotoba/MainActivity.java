@@ -150,11 +150,11 @@ public final class MainActivity extends Activity {
 
     private void buildInterface() {
         applyPalette();
-        configureWindow();
 
         root = new FrameLayout(this);
         root.setBackgroundColor(paper);
         setContentView(root);
+        configureWindow();
 
         mainColumn = new LinearLayout(this);
         mainColumn.setOrientation(LinearLayout.VERTICAL);
@@ -1216,11 +1216,12 @@ public final class MainActivity extends Activity {
 
     private void configureWindow() {
         Window window = getWindow();
+        View decorView = window.getDecorView();
         window.setStatusBarColor(topbar);
         window.setNavigationBarColor(paper);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             window.setDecorFitsSystemWindows(false);
-            WindowInsetsController controller = window.getInsetsController();
+            WindowInsetsController controller = decorView.getWindowInsetsController();
             if (controller != null) {
                 controller.setSystemBarsAppearance(
                         darkMode ? 0 : WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS,
@@ -1234,7 +1235,7 @@ public final class MainActivity extends Activity {
             if (!darkMode) {
                 flags |= View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
             }
-            window.getDecorView().setSystemUiVisibility(flags);
+            decorView.setSystemUiVisibility(flags);
         }
     }
 
