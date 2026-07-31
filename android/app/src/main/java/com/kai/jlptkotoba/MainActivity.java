@@ -121,6 +121,8 @@ public final class MainActivity extends Activity {
     private TextView vocabularyCount;
     private ListView vocabularyList;
     private WordAdapter wordAdapter;
+    private int vocabularyScrollGeneration;
+    private long vocabularyScrollLastFrameNanos;
 
     private List<Word> flashDeck = new ArrayList<>();
     private int flashIndex = -1;
@@ -642,6 +644,7 @@ public final class MainActivity extends Activity {
     public boolean dispatchTouchEvent(MotionEvent event) {
         int action = event.getActionMasked();
         if (action == MotionEvent.ACTION_DOWN) {
+            vocabularyScrollGeneration++;
             recycleDrawerVelocityTracker();
             drawerVelocityTracker = VelocityTracker.obtain();
             drawerVelocityTracker.addMovement(event);
@@ -793,15 +796,90 @@ public final class MainActivity extends Activity {
         if (vocabularyList == null || wordAdapter == null) {
             return;
         }
+        int animationGeneration = ++vocabularyScrollGeneration;
         vocabularyList.post(() -> {
+            if (animationGeneration != vocabularyScrollGeneration
+                    || vocabularyList == null
+                    || wordAdapter == null) {
+                return;
+            }
             int position = kana == null ? 0 : wordAdapter.positionForKana(kana);
             if (position >= 0) {
-                int currentPosition = Math.max(0, vocabularyList.getFirstVisiblePosition());
-                int itemDistance = Math.abs(position - currentPosition);
-                int duration = Math.min(1200, 280 + itemDistance * 9);
-                vocabularyList.smoothScrollToPositionFromTop(position, dp(4), duration);
+                vocabularyScrollLastFrameNanos = 0L;
+                runVocabularyEaseOutFrame(position, animationGeneration);
             }
         });
+    }
+
+    private void runVocabularyEaseOutFrame(int targetPosition, int animationGeneration) {
+        if (animationGeneration != vocabularyScrollGeneration
+                || vocabularyList == null
+                || wordAdapter == null
+                || vocabularyList.getChildCount() == 0) {
+            return;
+        }
+
+        int firstVisible = vocabularyList.getFirstVisiblePosition();
+        int lastVisible = vocabularyList.getLastVisiblePosition();
+        int desiredTop = dp(4);
+        boolean targetVisible = targetPosition >= firstVisible && targetPosition <= lastVisible;
+        float remainingPixels;
+
+        if (targetVisible) {
+            View targetView = vocabularyList.getChildAt(targetPosition - firstVisible);
+            if (targetView == null) {
+                return;
+            }
+            remainingPixels = targetView.getTop() - desiredTop;
+        } else {
+            View firstChild = vocabularyList.getChildAt(0);
+            View lastChild = vocabularyList.getChildAt(vocabularyList.getChildCount() - 1);
+            float visibleSpan = Math.max(
+                    dp(58),
+                    lastChild.getBottom() - firstChild.getTop()
+            );
+            float averageRowHeight = visibleSpan / vocabularyList.getChildCount();
+            if (targetPosition > lastVisible) {
+                int rowsAway = targetPosition - lastVisible;
+                remainingPixels = Math.max(dp(1), lastChild.getTop() - desiredTop)
+                        + rowsAway * averageRowHeight;
+            } else {
+                int rowsAway = firstVisible - targetPosition;
+                remainingPixels = -(
+                        Math.max(dp(1), desiredTop - firstChild.getTop())
+                                + rowsAway * averageRowHeight
+                );
+            }
+        }
+
+        float remainingDistance = Math.abs(remainingPixels);
+        if (targetVisible && remainingDistance <= 1f) {
+            vocabularyList.setSelectionFromTop(targetPosition, desiredTop);
+            activeKana = wordAdapter.kanaAtPosition(targetPosition);
+            return;
+        }
+
+        long frameNanos = System.nanoTime();
+        float frameSeconds = vocabularyScrollLastFrameNanos == 0L
+                ? 1f / 60f
+                : Math.min(1f / 30f, (frameNanos - vocabularyScrollLastFrameNanos) / 1_000_000_000f);
+        vocabularyScrollLastFrameNanos = frameNanos;
+
+        // A braking-distance curve: fast while far away, then progressively slower near the target.
+        float braking = dp(50_000);
+        float maximumVelocity = dp(26_000);
+        float minimumVelocity = dp(240);
+        float velocity = (float) Math.sqrt(2f * braking * remainingDistance);
+        velocity = Math.max(minimumVelocity, Math.min(maximumVelocity, velocity));
+        int frameDistance = Math.max(1, Math.round(velocity * frameSeconds));
+        if (targetVisible) {
+            frameDistance = Math.min(frameDistance, Math.max(1, Math.round(remainingDistance)));
+        }
+
+        vocabularyList.scrollListBy(remainingPixels > 0f ? frameDistance : -frameDistance);
+        vocabularyList.postOnAnimation(
+                () -> runVocabularyEaseOutFrame(targetPosition, animationGeneration)
+        );
     }
 
     private Set<String> availableKana() {
