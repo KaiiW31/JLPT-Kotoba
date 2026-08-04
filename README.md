@@ -19,7 +19,7 @@ Both apps work locally. No account, internet permission, analytics, or cloud sto
 
 - Vocabulary browsing and full-text search
 - Clearly separated and aligned per-hiragana vocabulary tables
-- Direction-aware vocabulary controls that hide while browsing and reappear on reverse scroll
+- GPU-accelerated vocabulary controls that hide while browsing and reappear on reverse scroll
 - Finger-tracked slide-out menu with automatic visible-kana highlighting
 - Fast, natural ease-out scrolling when selecting a kana section
 - N5–N1 level selector

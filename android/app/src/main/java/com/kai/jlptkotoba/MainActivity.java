@@ -122,14 +122,14 @@ public final class MainActivity extends Activity {
     private LinearLayout vocabularyControls;
     private ListView vocabularyList;
     private WordAdapter wordAdapter;
-    private ValueAnimator vocabularyControlsAnimator;
     private boolean vocabularyControlsHidden;
-    private int vocabularyControlsExpandedHeight;
+    private int vocabularyControlsHeight;
     private int vocabularyScrollPreviousFirst = -1;
     private int vocabularyScrollPreviousTop;
     private int vocabularyScrollDirectionDistance;
     private int vocabularyScrollGeneration;
     private long vocabularyScrollLastFrameNanos;
+    private boolean vocabularyKanaScrollRunning;
 
     private List<Word> flashDeck = new ArrayList<>();
     private int flashIndex = -1;
@@ -657,6 +657,7 @@ public final class MainActivity extends Activity {
         int action = event.getActionMasked();
         if (action == MotionEvent.ACTION_DOWN) {
             vocabularyScrollGeneration++;
+            vocabularyKanaScrollRunning = false;
             recycleDrawerVelocityTracker();
             drawerVelocityTracker = VelocityTracker.obtain();
             drawerVelocityTracker.addMovement(event);
@@ -808,17 +809,24 @@ public final class MainActivity extends Activity {
         if (vocabularyList == null || wordAdapter == null) {
             return;
         }
+        vocabularyKanaScrollRunning = true;
+        animateVocabularyControls(true);
         int animationGeneration = ++vocabularyScrollGeneration;
         vocabularyList.post(() -> {
             if (animationGeneration != vocabularyScrollGeneration
                     || vocabularyList == null
                     || wordAdapter == null) {
+                if (animationGeneration == vocabularyScrollGeneration) {
+                    vocabularyKanaScrollRunning = false;
+                }
                 return;
             }
             int position = kana == null ? 0 : wordAdapter.positionForKana(kana);
             if (position >= 0) {
                 vocabularyScrollLastFrameNanos = 0L;
                 runVocabularyEaseOutFrame(position, animationGeneration);
+            } else {
+                vocabularyKanaScrollRunning = false;
             }
         });
     }
@@ -828,6 +836,9 @@ public final class MainActivity extends Activity {
                 || vocabularyList == null
                 || wordAdapter == null
                 || vocabularyList.getChildCount() == 0) {
+            if (animationGeneration == vocabularyScrollGeneration) {
+                vocabularyKanaScrollRunning = false;
+            }
             return;
         }
 
@@ -840,6 +851,7 @@ public final class MainActivity extends Activity {
         if (targetVisible) {
             View targetView = vocabularyList.getChildAt(targetPosition - firstVisible);
             if (targetView == null) {
+                vocabularyKanaScrollRunning = false;
                 return;
             }
             remainingPixels = targetView.getTop() - desiredTop;
@@ -868,6 +880,7 @@ public final class MainActivity extends Activity {
         if (targetVisible && remainingDistance <= 1f) {
             vocabularyList.setSelectionFromTop(targetPosition, desiredTop);
             activeKana = wordAdapter.kanaAtPosition(targetPosition);
+            vocabularyKanaScrollRunning = false;
             return;
         }
 
@@ -960,15 +973,15 @@ public final class MainActivity extends Activity {
     }
 
     private void renderVocabulary() {
-        if (vocabularyControlsAnimator != null) {
-            vocabularyControlsAnimator.cancel();
-            vocabularyControlsAnimator = null;
+        if (vocabularyControls != null) {
+            vocabularyControls.animate().cancel();
         }
         vocabularyControlsHidden = false;
-        vocabularyControlsExpandedHeight = 0;
+        vocabularyControlsHeight = 0;
         vocabularyScrollPreviousFirst = -1;
         vocabularyScrollPreviousTop = 0;
         vocabularyScrollDirectionDistance = 0;
+        vocabularyKanaScrollRunning = false;
 
         List<Word> allWords = repository.words(currentLevel);
         allWords.sort((left, right) -> {
@@ -984,10 +997,8 @@ public final class MainActivity extends Activity {
         vocabularyControls = new LinearLayout(this);
         vocabularyControls.setOrientation(LinearLayout.VERTICAL);
         vocabularyControls.setClipChildren(true);
-        content.addView(vocabularyControls, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-        ));
+        vocabularyControls.setBackgroundColor(paper);
+        vocabularyControls.setElevation(dp(2));
 
         LinearLayout heading = new LinearLayout(this);
         heading.setOrientation(LinearLayout.HORIZONTAL);
@@ -1036,18 +1047,44 @@ public final class MainActivity extends Activity {
         countParams.setMargins(dp(2), 0, 0, dp(7));
         vocabularyControls.addView(vocabularyCount, countParams);
 
-        vocabularyList = new ListView(this);
-        vocabularyList.setDivider(new ColorDrawable(line));
-        vocabularyList.setDividerHeight(1);
-        vocabularyList.setBackground(roundedBackground(panel, line, 12));
-        vocabularyList.setClipToOutline(true);
-        content.addView(vocabularyList, new LinearLayout.LayoutParams(
+        FrameLayout vocabularyViewport = new FrameLayout(this);
+        content.addView(vocabularyViewport, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 0,
                 1
         ));
 
+        vocabularyList = new ListView(this);
+        vocabularyList.setDivider(new ColorDrawable(line));
+        vocabularyList.setDividerHeight(1);
+        vocabularyList.setBackground(roundedBackground(panel, line, 12));
+        vocabularyList.setClipToOutline(true);
+        vocabularyViewport.addView(vocabularyList, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+        ));
+        vocabularyViewport.addView(vocabularyControls, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.TOP
+        ));
+
         updateVocabularyFilter(allWords, searchQuery);
+        LinearLayout measuredControls = vocabularyControls;
+        ListView measuredList = vocabularyList;
+        measuredControls.post(() -> {
+            if (measuredControls != vocabularyControls || measuredList != vocabularyList) {
+                return;
+            }
+            int measuredHeight = measuredControls.getHeight();
+            if (measuredHeight > 0 && measuredHeight != vocabularyControlsHeight) {
+                vocabularyControlsHeight = measuredHeight;
+                if (wordAdapter != null) {
+                    wordAdapter.notifyDataSetChanged();
+                    measuredList.setSelection(0);
+                }
+            }
+        });
         search.addTextChangedListener(new TextWatcher() {
             @Override
             public void beforeTextChanged(CharSequence value, int start, int count, int after) {
@@ -1104,16 +1141,20 @@ public final class MainActivity extends Activity {
                 if (wordAdapter == null || totalItemCount == 0) {
                     return;
                 }
-                String visibleKana = wordAdapter.kanaAtPosition(firstVisibleItem);
+                View lastChild = view.getChildAt(view.getChildCount() - 1);
+                boolean atBottom = lastChild != null
+                        && view.getLastVisiblePosition() == totalItemCount - 1
+                        && lastChild.getBottom() <= view.getHeight() - view.getPaddingBottom() + dp(1);
+                String visibleKana = atBottom
+                        ? wordAdapter.lastKana()
+                        : wordAdapter.kanaAtOrAfterPosition(firstVisibleItem);
                 if (visibleKana != null) {
                     activeKana = visibleKana;
                 }
                 updateVocabularyControlsForScroll(view, firstVisibleItem);
             }
         });
-        String initialKana = wordAdapter.kanaAtPosition(
-                Math.max(0, vocabularyList.getFirstVisiblePosition())
-        );
+        String initialKana = wordAdapter.firstKana();
         if (initialKana != null) {
             activeKana = initialKana;
         }
@@ -1128,26 +1169,38 @@ public final class MainActivity extends Activity {
         if (vocabularyScrollPreviousFirst < 0) {
             vocabularyScrollPreviousFirst = firstVisibleItem;
             vocabularyScrollPreviousTop = firstTop;
+            if (firstVisibleItem == 0 && firstTop >= 0) {
+                showVocabularyControlsImmediately();
+            }
             return;
         }
 
+        int itemDelta = firstVisibleItem - vocabularyScrollPreviousFirst;
+        int pixelDelta = itemDelta * dp(58) + vocabularyScrollPreviousTop - firstTop;
         if (firstVisibleItem == 0 && firstTop >= 0) {
             vocabularyScrollDirectionDistance = 0;
-            setVocabularyControlsHidden(false);
+            showVocabularyControlsImmediately();
+        } else if (vocabularyKanaScrollRunning) {
+            vocabularyScrollDirectionDistance = 0;
+            animateVocabularyControls(true);
         } else {
-            int itemDelta = firstVisibleItem - vocabularyScrollPreviousFirst;
-            int pixelDelta = itemDelta * dp(58) + vocabularyScrollPreviousTop - firstTop;
             if (pixelDelta > 0) {
+                if (firstVisibleItem == 0 && vocabularyControlsHeight > 0) {
+                    positionVocabularyControlsWithList(Math.min(
+                            vocabularyControlsHeight,
+                            Math.max(0, -firstTop)
+                    ));
+                }
                 vocabularyScrollDirectionDistance = Math.max(0, vocabularyScrollDirectionDistance)
                         + Math.min(pixelDelta, dp(64));
-                if (vocabularyScrollDirectionDistance >= dp(18)) {
-                    setVocabularyControlsHidden(true);
+                if (firstVisibleItem > 0 && vocabularyScrollDirectionDistance >= dp(18)) {
+                    animateVocabularyControls(true);
                 }
             } else if (pixelDelta < 0) {
                 vocabularyScrollDirectionDistance = Math.min(0, vocabularyScrollDirectionDistance)
                         - Math.min(-pixelDelta, dp(64));
                 if (vocabularyScrollDirectionDistance <= -dp(8)) {
-                    setVocabularyControlsHidden(false);
+                    animateVocabularyControls(false);
                 }
             }
         }
@@ -1156,73 +1209,52 @@ public final class MainActivity extends Activity {
         vocabularyScrollPreviousTop = firstTop;
     }
 
-    private void setVocabularyControlsHidden(boolean hidden) {
-        if (vocabularyControls == null || vocabularyControlsHidden == hidden) {
+    private void animateVocabularyControls(boolean hidden) {
+        if (vocabularyControls == null) {
             return;
         }
-
-        LinearLayout controlsView = vocabularyControls;
-        if (vocabularyControlsAnimator != null) {
-            vocabularyControlsAnimator.cancel();
+        int controlsHeight = vocabularyControlsHeight > 0
+                ? vocabularyControlsHeight
+                : vocabularyControls.getHeight();
+        if (controlsHeight <= 0) {
+            return;
+        }
+        float targetTranslation = hidden ? -controlsHeight : 0f;
+        if (vocabularyControlsHidden == hidden
+                && Math.abs(vocabularyControls.getTranslationY() - targetTranslation) <= 1f) {
+            return;
         }
         vocabularyControlsHidden = hidden;
+        vocabularyControls.animate().cancel();
+        vocabularyControls.animate()
+                .translationY(targetTranslation)
+                .alpha(hidden ? 0f : 1f)
+                .setDuration(hidden ? 170 : 210)
+                .setInterpolator(new DecelerateInterpolator(2f))
+                .withLayer()
+                .start();
+    }
 
-        int currentHeight = controlsView.getHeight();
-        if (!hidden) {
-            controlsView.setVisibility(View.VISIBLE);
-        } else if (currentHeight > 0) {
-            vocabularyControlsExpandedHeight = currentHeight;
+    private void positionVocabularyControlsWithList(int hiddenPixels) {
+        if (vocabularyControls == null || vocabularyControlsHeight <= 0) {
+            return;
         }
-        if (vocabularyControlsExpandedHeight <= 0) {
-            vocabularyControlsExpandedHeight = Math.max(currentHeight, controlsView.getMeasuredHeight());
+        int clamped = Math.max(0, Math.min(vocabularyControlsHeight, hiddenPixels));
+        float hiddenFraction = clamped / (float) vocabularyControlsHeight;
+        vocabularyControls.animate().cancel();
+        vocabularyControls.setTranslationY(-clamped);
+        vocabularyControls.setAlpha(1f - hiddenFraction);
+        vocabularyControlsHidden = clamped >= vocabularyControlsHeight;
+    }
+
+    private void showVocabularyControlsImmediately() {
+        if (vocabularyControls == null) {
+            return;
         }
-
-        int targetHeight = hidden ? 0 : vocabularyControlsExpandedHeight;
-        LinearLayout.LayoutParams params = (LinearLayout.LayoutParams) controlsView.getLayoutParams();
-        params.height = Math.max(0, currentHeight);
-        controlsView.setLayoutParams(params);
-
-        ValueAnimator animator = ValueAnimator.ofInt(Math.max(0, currentHeight), targetHeight);
-        vocabularyControlsAnimator = animator;
-        animator.setDuration(hidden ? 190 : 220);
-        animator.setInterpolator(new DecelerateInterpolator(2f));
-        animator.addUpdateListener(value -> {
-            int height = (int) value.getAnimatedValue();
-            ViewGroup.LayoutParams animatedParams = controlsView.getLayoutParams();
-            animatedParams.height = height;
-            controlsView.setLayoutParams(animatedParams);
-            float visibleFraction = vocabularyControlsExpandedHeight == 0
-                    ? 1f
-                    : height / (float) vocabularyControlsExpandedHeight;
-            controlsView.setAlpha(visibleFraction);
-            controlsView.setTranslationY(-(1f - visibleFraction) * dp(18));
-        });
-        animator.addListener(new AnimatorListenerAdapter() {
-            private boolean cancelled;
-
-            @Override
-            public void onAnimationCancel(Animator animation) {
-                cancelled = true;
-            }
-
-            @Override
-            public void onAnimationEnd(Animator animation) {
-                if (cancelled || vocabularyControlsAnimator != animation) {
-                    return;
-                }
-                if (hidden) {
-                    controlsView.setVisibility(View.GONE);
-                } else {
-                    ViewGroup.LayoutParams restoredParams = controlsView.getLayoutParams();
-                    restoredParams.height = ViewGroup.LayoutParams.WRAP_CONTENT;
-                    controlsView.setLayoutParams(restoredParams);
-                    controlsView.setAlpha(1f);
-                    controlsView.setTranslationY(0f);
-                }
-                vocabularyControlsAnimator = null;
-            }
-        });
-        animator.start();
+        vocabularyControls.animate().cancel();
+        vocabularyControls.setTranslationY(0f);
+        vocabularyControls.setAlpha(1f);
+        vocabularyControlsHidden = false;
     }
 
     private void updateVocabularyFilter(List<Word> allWords, String query) {
@@ -1711,8 +1743,9 @@ public final class MainActivity extends Activity {
         setContentView(message);
     }
 
-    private static final int VOCAB_SECTION = 0;
-    private static final int VOCAB_WORD = 1;
+    private static final int VOCAB_SPACER = 0;
+    private static final int VOCAB_SECTION = 1;
+    private static final int VOCAB_WORD = 2;
 
     private final class VocabularyItem {
         final int kind;
@@ -1730,6 +1763,7 @@ public final class MainActivity extends Activity {
         private final List<VocabularyItem> items = new ArrayList<>();
 
         WordAdapter(List<Word> words) {
+            items.add(new VocabularyItem(VOCAB_SPACER, null, null));
             String previousKana = null;
             for (Word word : words) {
                 String kana = normalizedFirstKana(word.furigana);
@@ -1758,7 +1792,7 @@ public final class MainActivity extends Activity {
 
         @Override
         public int getViewTypeCount() {
-            return 2;
+            return 3;
         }
 
         @Override
@@ -1793,11 +1827,44 @@ public final class MainActivity extends Activity {
             return items.get(position).kana;
         }
 
+        String kanaAtOrAfterPosition(int position) {
+            for (int index = Math.max(0, position); index < items.size(); index++) {
+                String kana = items.get(index).kana;
+                if (kana != null) {
+                    return kana;
+                }
+            }
+            return null;
+        }
+
+        String firstKana() {
+            return kanaAtOrAfterPosition(0);
+        }
+
+        String lastKana() {
+            for (int index = items.size() - 1; index >= 0; index--) {
+                String kana = items.get(index).kana;
+                if (kana != null) {
+                    return kana;
+                }
+            }
+            return null;
+        }
+
         @Override
         public View getView(int position, View convertView, ViewGroup parent) {
             VocabularyItem item = items.get(position);
+            if (item.kind == VOCAB_SPACER) {
+                View spacer = new View(MainActivity.this);
+                spacer.setBackgroundColor(paper);
+                spacer.setLayoutParams(new AbsListView.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        Math.max(1, vocabularyControlsHeight)
+                ));
+                return spacer;
+            }
             if (item.kind == VOCAB_SECTION) {
-                return buildKanaSectionRow(item.kana, position == 0);
+                return buildKanaSectionRow(item.kana, position == 1);
             }
             return buildWordRow(item.word, position);
         }
