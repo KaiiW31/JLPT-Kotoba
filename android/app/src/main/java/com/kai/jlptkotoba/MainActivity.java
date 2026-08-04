@@ -17,6 +17,7 @@ import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.util.SparseIntArray;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.VelocityTracker;
@@ -126,7 +127,8 @@ public final class MainActivity extends Activity {
     private int vocabularyControlsHeight;
     private int vocabularyScrollPreviousFirst = -1;
     private int vocabularyScrollPreviousTop;
-    private int vocabularyScrollDirectionDistance;
+    private final SparseIntArray vocabularyVisibleItemTops = new SparseIntArray();
+    private int vocabularyControlsLastDirection;
     private int vocabularyScrollGeneration;
     private long vocabularyScrollLastFrameNanos;
     private boolean vocabularyKanaScrollRunning;
@@ -980,7 +982,8 @@ public final class MainActivity extends Activity {
         vocabularyControlsHeight = 0;
         vocabularyScrollPreviousFirst = -1;
         vocabularyScrollPreviousTop = 0;
-        vocabularyScrollDirectionDistance = 0;
+        vocabularyVisibleItemTops.clear();
+        vocabularyControlsLastDirection = 0;
         vocabularyKanaScrollRunning = false;
 
         List<Word> allWords = repository.words(currentLevel);
@@ -1080,6 +1083,8 @@ public final class MainActivity extends Activity {
             if (measuredHeight > 0 && measuredHeight != vocabularyControlsHeight) {
                 vocabularyControlsHeight = measuredHeight;
                 if (wordAdapter != null) {
+                    vocabularyVisibleItemTops.clear();
+                    vocabularyScrollPreviousFirst = -1;
                     wordAdapter.notifyDataSetChanged();
                     measuredList.setSelection(0);
                 }
@@ -1126,8 +1131,14 @@ public final class MainActivity extends Activity {
         vocabularyList.setOnScrollListener(new AbsListView.OnScrollListener() {
             @Override
             public void onScrollStateChanged(AbsListView view, int scrollState) {
+                if (scrollState == AbsListView.OnScrollListener.SCROLL_STATE_TOUCH_SCROLL) {
+                    vocabularyControlsLastDirection = 0;
+                    if (vocabularyControls != null) {
+                        vocabularyControls.animate().cancel();
+                    }
+                }
                 if (scrollState == AbsListView.OnScrollListener.SCROLL_STATE_IDLE) {
-                    vocabularyScrollDirectionDistance = 0;
+                    settleVocabularyControls();
                 }
             }
 
@@ -1167,46 +1178,55 @@ public final class MainActivity extends Activity {
 
         int firstTop = view.getChildAt(0).getTop();
         if (vocabularyScrollPreviousFirst < 0) {
-            vocabularyScrollPreviousFirst = firstVisibleItem;
-            vocabularyScrollPreviousTop = firstTop;
             if (firstVisibleItem == 0 && firstTop >= 0) {
                 showVocabularyControlsImmediately();
             }
+            rememberVocabularyItemTops(view, firstVisibleItem);
             return;
         }
 
-        int itemDelta = firstVisibleItem - vocabularyScrollPreviousFirst;
-        int pixelDelta = itemDelta * dp(58) + vocabularyScrollPreviousTop - firstTop;
+        int pixelDelta = calculateVocabularyScrollDelta(view, firstVisibleItem);
         if (firstVisibleItem == 0 && firstTop >= 0) {
-            vocabularyScrollDirectionDistance = 0;
             showVocabularyControlsImmediately();
         } else if (vocabularyKanaScrollRunning) {
-            vocabularyScrollDirectionDistance = 0;
             animateVocabularyControls(true);
-        } else {
-            if (pixelDelta > 0) {
-                if (firstVisibleItem == 0 && vocabularyControlsHeight > 0) {
-                    positionVocabularyControlsWithList(Math.min(
-                            vocabularyControlsHeight,
-                            Math.max(0, -firstTop)
-                    ));
-                }
-                vocabularyScrollDirectionDistance = Math.max(0, vocabularyScrollDirectionDistance)
-                        + Math.min(pixelDelta, dp(64));
-                if (firstVisibleItem > 0 && vocabularyScrollDirectionDistance >= dp(18)) {
-                    animateVocabularyControls(true);
-                }
-            } else if (pixelDelta < 0) {
-                vocabularyScrollDirectionDistance = Math.min(0, vocabularyScrollDirectionDistance)
-                        - Math.min(-pixelDelta, dp(64));
-                if (vocabularyScrollDirectionDistance <= -dp(8)) {
-                    animateVocabularyControls(false);
-                }
+        } else if (pixelDelta != 0) {
+            moveVocabularyControlsBy(pixelDelta);
+            vocabularyControlsLastDirection = pixelDelta > 0 ? 1 : -1;
+        }
+
+        rememberVocabularyItemTops(view, firstVisibleItem);
+    }
+
+    private int calculateVocabularyScrollDelta(AbsListView view, int firstVisibleItem) {
+        for (int childIndex = 0; childIndex < view.getChildCount(); childIndex++) {
+            int adapterPosition = firstVisibleItem + childIndex;
+            int previousTop = vocabularyVisibleItemTops.get(adapterPosition, Integer.MIN_VALUE);
+            if (previousTop != Integer.MIN_VALUE) {
+                return previousTop - view.getChildAt(childIndex).getTop();
             }
         }
 
+        int firstTop = view.getChildAt(0).getTop();
+        int itemDelta = firstVisibleItem - vocabularyScrollPreviousFirst;
+        View lastChild = view.getChildAt(view.getChildCount() - 1);
+        float averageRowHeight = Math.max(
+                dp(1),
+                (lastChild.getBottom() - firstTop) / (float) view.getChildCount()
+        );
+        return Math.round(itemDelta * averageRowHeight + vocabularyScrollPreviousTop - firstTop);
+    }
+
+    private void rememberVocabularyItemTops(AbsListView view, int firstVisibleItem) {
+        vocabularyVisibleItemTops.clear();
+        for (int childIndex = 0; childIndex < view.getChildCount(); childIndex++) {
+            vocabularyVisibleItemTops.put(
+                    firstVisibleItem + childIndex,
+                    view.getChildAt(childIndex).getTop()
+            );
+        }
         vocabularyScrollPreviousFirst = firstVisibleItem;
-        vocabularyScrollPreviousTop = firstTop;
+        vocabularyScrollPreviousTop = view.getChildAt(0).getTop();
     }
 
     private void animateVocabularyControls(boolean hidden) {
@@ -1220,31 +1240,70 @@ public final class MainActivity extends Activity {
             return;
         }
         float targetTranslation = hidden ? -controlsHeight : 0f;
-        if (vocabularyControlsHidden == hidden
-                && Math.abs(vocabularyControls.getTranslationY() - targetTranslation) <= 1f) {
+        float currentTranslation = vocabularyControls.getTranslationY();
+        if (Math.abs(currentTranslation - targetTranslation) <= 1f) {
+            vocabularyControls.setTranslationY(targetTranslation);
+            vocabularyControls.setAlpha(1f);
+            vocabularyControlsHidden = hidden;
             return;
         }
         vocabularyControlsHidden = hidden;
         vocabularyControls.animate().cancel();
+        float remainingFraction = Math.min(
+                1f,
+                Math.abs(currentTranslation - targetTranslation) / controlsHeight
+        );
         vocabularyControls.animate()
                 .translationY(targetTranslation)
-                .alpha(hidden ? 0f : 1f)
-                .setDuration(hidden ? 170 : 210)
+                .alpha(1f)
+                .setDuration(Math.round(90 + 130 * remainingFraction))
                 .setInterpolator(new DecelerateInterpolator(2f))
                 .withLayer()
                 .start();
     }
 
-    private void positionVocabularyControlsWithList(int hiddenPixels) {
+    private void moveVocabularyControlsBy(int scrollDelta) {
         if (vocabularyControls == null || vocabularyControlsHeight <= 0) {
             return;
         }
-        int clamped = Math.max(0, Math.min(vocabularyControlsHeight, hiddenPixels));
-        float hiddenFraction = clamped / (float) vocabularyControlsHeight;
+        float currentOffset = Math.max(0f, -vocabularyControls.getTranslationY());
+        float targetOffset = Math.max(
+                0f,
+                Math.min(vocabularyControlsHeight, currentOffset + scrollDelta)
+        );
         vocabularyControls.animate().cancel();
-        vocabularyControls.setTranslationY(-clamped);
-        vocabularyControls.setAlpha(1f - hiddenFraction);
-        vocabularyControlsHidden = clamped >= vocabularyControlsHeight;
+        vocabularyControls.setTranslationY(-targetOffset);
+        vocabularyControls.setAlpha(1f);
+        vocabularyControlsHidden = targetOffset >= vocabularyControlsHeight - 1f;
+    }
+
+    private void settleVocabularyControls() {
+        if (vocabularyControls == null || vocabularyControlsHeight <= 0) {
+            return;
+        }
+        float currentOffset = Math.max(0f, -vocabularyControls.getTranslationY());
+        if (currentOffset <= 1f || currentOffset >= vocabularyControlsHeight - 1f) {
+            vocabularyControlsLastDirection = 0;
+            return;
+        }
+        boolean hide = vocabularyControlsLastDirection > 0
+                || (vocabularyControlsLastDirection == 0
+                && currentOffset >= vocabularyControlsHeight / 2f);
+        if (vocabularyList != null && vocabularyList.getFirstVisiblePosition() == 0) {
+            int coupledDistance = hide
+                    ? Math.round(vocabularyControlsHeight - currentOffset)
+                    : -Math.round(currentOffset);
+            if (Math.abs(coupledDistance) > 1) {
+                vocabularyControlsLastDirection = hide ? 1 : -1;
+                int duration = Math.round(
+                        90 + 130 * Math.min(1f, Math.abs(coupledDistance) / (float) vocabularyControlsHeight)
+                );
+                vocabularyList.smoothScrollBy(coupledDistance, duration);
+                return;
+            }
+        }
+        animateVocabularyControls(hide);
+        vocabularyControlsLastDirection = 0;
     }
 
     private void showVocabularyControlsImmediately() {
@@ -1255,6 +1314,7 @@ public final class MainActivity extends Activity {
         vocabularyControls.setTranslationY(0f);
         vocabularyControls.setAlpha(1f);
         vocabularyControlsHidden = false;
+        vocabularyControlsLastDirection = 0;
     }
 
     private void updateVocabularyFilter(List<Word> allWords, String query) {
@@ -1265,7 +1325,10 @@ public final class MainActivity extends Activity {
             }
         }
         wordAdapter = new WordAdapter(filtered);
+        vocabularyVisibleItemTops.clear();
+        vocabularyScrollPreviousFirst = -1;
         vocabularyList.setAdapter(wordAdapter);
+        showVocabularyControlsImmediately();
         vocabularyCount.setText(filtered.isEmpty()
                 ? (allWords.isEmpty() ? "Coming soon" : "0 matches")
                 : filtered.size() + " words");
