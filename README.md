@@ -10,10 +10,19 @@ JLPT Kotoba is an offline Japanese vocabulary and flashcard app for Windows and 
 
 ## Downloads
 
-- `JLPT Kotoba.exe` — existing Windows desktop build
+- `JLPT Kotoba.exe` — Windows desktop build
 - `JLPT Kotoba.apk` — installable Android build
 
 Both apps work locally. No account, internet permission, analytics, or cloud storage is used.
+
+## Windows features
+
+- Compact APK-style toolbar and animated slide-out study menu
+- Automatic active-kana tracking with smooth jumps to each vocabulary section
+- Clearly separated, aligned per-hiragana vocabulary tables
+- Full-text search, CSV importing, and editing for custom vocabulary
+- Centered flashcards with Back, Reveal/Next, Restart, progress, and saved sessions
+- N5–N1 level selector, light and dark themes, and keyboard navigation
 
 ## Android features
 

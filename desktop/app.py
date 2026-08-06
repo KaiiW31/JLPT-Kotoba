@@ -171,6 +171,15 @@ class JLPTStudyApp(ctk.CTk):
         self.active_kana = None
         self.pencil_icon_image = None
         self.import_icon_image = None
+        self.drawer_open = False
+        self.drawer_animation_after_id = None
+        self.drawer_animation_start = None
+        self.drawer_animation_from = 0
+        self.drawer_animation_to = 0
+        self.drawer_animation_duration = 0.24
+        self.drawer_x = 0
+        self.drawer_backdrop_image = None
+        self.drawer_close_callback = None
 
         self.search_var = ctk.StringVar()
         self.flash_level_var = ctk.StringVar(value="N5")
@@ -195,129 +204,64 @@ class JLPTStudyApp(ctk.CTk):
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=1)
 
-        self.topbar = ctk.CTkFrame(self, height=82, corner_radius=0, fg_color=("#8F1717", "#4A0B14"))
+        self.topbar = ctk.CTkFrame(self, height=72, corner_radius=0, fg_color=("#8F1717", "#4A0B14"))
         self.topbar.grid(row=0, column=0, sticky="ew")
-        self.topbar.grid_columnconfigure(2, weight=1)
+        self.topbar.grid_propagate(False)
+        self.topbar.grid_columnconfigure(1, weight=1)
 
-        ctk.CTkLabel(
+        self.menu_button = themed_button(
+            self.topbar,
+            variant="topbar",
+            text="☰",
+            width=48,
+            height=46,
+            corner_radius=10,
+            font=ctk.CTkFont(size=25),
+            command=self.open_drawer,
+        )
+        self.menu_button.grid(row=0, column=0, sticky="w", padx=(22, 14), pady=13)
+
+        self.brand_label = ctk.CTkLabel(
             self.topbar,
             text="JLPT Kotoba",
-            font=ctk.CTkFont(size=27, weight="bold"),
+            font=ctk.CTkFont(size=25, weight="bold"),
             text_color="#FFF7ED",
-        ).grid(row=0, column=0, rowspan=2, sticky="w", padx=(24, 18), pady=18)
-
-        self.nav_buttons = {}
-        nav = ctk.CTkFrame(self.topbar, fg_color="transparent")
-        nav.grid(row=0, column=1, sticky="w", pady=(15, 5))
-        for label in ["Vocabulary", "Flashcards"]:
-            button = themed_button(
-                nav,
-                variant="topbar",
-                text=label,
-                width=116,
-                height=34,
-                font=ctk.CTkFont(size=14),
-                command=lambda value=label: self.switch_view(value),
-            )
-            button.pack(side="left", padx=4)
-            self.nav_buttons[label] = button
-
-        self.levels_slot = ctk.CTkFrame(self.topbar, width=306, height=28, fg_color="transparent")
-        self.levels_slot.grid(row=1, column=1, sticky="w", pady=(0, 12))
-        self.levels_slot.grid_propagate(False)
-        self.levels_slot.grid_columnconfigure(0, weight=1)
-        self.levels_slot.grid_rowconfigure(0, weight=1)
-        self.levels_bar = ctk.CTkFrame(self.levels_slot, fg_color="transparent")
-        self.levels_bar.grid(row=0, column=0, sticky="w")
-        self.level_buttons = {}
-        for level in LEVELS:
-            button = themed_button(
-                self.levels_bar,
-                variant="topbar",
-                text=level,
-                width=54,
-                height=28,
-                font=ctk.CTkFont(size=14),
-                command=lambda value=level: self.show_vocabulary(value),
-            )
-            button.pack(side="left", padx=3)
-            self.level_buttons[level] = button
-        self.levels_spacer = ctk.CTkFrame(self.levels_slot, width=306, height=28, fg_color="transparent")
-        self.levels_spacer.grid(row=0, column=0, sticky="nsew")
-        self.levels_spacer.grid_propagate(False)
-        self.levels_bar.tkraise()
+        )
+        self.brand_label.grid(row=0, column=1, sticky="w")
 
         self.theme_button = themed_button(
             self.topbar,
             variant="topbar_active",
-            text="Theme",
-            width=94,
-            height=36,
+            text="Light" if ctk.get_appearance_mode() == "Dark" else "Dark",
+            width=88,
+            height=42,
+            corner_radius=10,
             font=ctk.CTkFont(size=14),
             command=self.toggle_theme,
         )
-        self.theme_button.grid(row=0, column=3, rowspan=2, sticky="e", padx=24)
+        self.theme_button.grid(row=0, column=2, sticky="e", padx=22, pady=15)
 
         self.shell = ctk.CTkFrame(self, fg_color="transparent")
-        self.shell.grid(row=1, column=0, sticky="nsew", padx=24, pady=22)
-        self.shell.grid_columnconfigure(1, weight=1)
+        self.shell.grid(row=1, column=0, sticky="nsew", padx=28, pady=(24, 26))
+        self.shell.grid_columnconfigure(0, weight=1)
         self.shell.grid_rowconfigure(1, weight=1)
 
-        self.side_slot = ctk.CTkFrame(self.shell, width=142, fg_color="transparent")
-        self.side_slot.grid(row=0, column=0, rowspan=2, sticky="ns", padx=(0, 18))
-        self.side_slot.grid_propagate(False)
-        self.side_slot.grid_columnconfigure(0, weight=1)
-        self.side_slot.grid_rowconfigure(0, weight=1)
-
-        self.kana_rail = ctk.CTkFrame(self.side_slot, width=142, fg_color=PANEL, border_width=1, border_color=LINE, corner_radius=14)
-        self.kana_rail.grid(row=0, column=0, sticky="nsew")
-        self.kana_rail.grid_propagate(False)
-        self.kana_rail.grid_columnconfigure(0, weight=1)
-        self.kana_rail.grid_rowconfigure(0, weight=1)
-        self.kana_rail_widget = KanaRail(self.kana_rail, self.toggle_kana_group, self.jump_to_kana, scale=self.kana_rail_scale())
-        self.kana_rail_widget.grid(row=0, column=0, sticky="nsew", padx=6, pady=8)
-
-        self.flash_rail = ctk.CTkFrame(self.side_slot, width=142, fg_color=PANEL, border_width=1, border_color=LINE, corner_radius=14)
-        self.flash_rail.grid(row=0, column=0, sticky="nsew")
-        self.flash_rail.grid_columnconfigure(0, weight=1)
-        self.flash_rail_buttons = {}
-        ctk.CTkLabel(
-            self.flash_rail,
-            text="Decks",
-            text_color=INK,
-            font=ctk.CTkFont(size=18, weight="bold"),
-        ).grid(row=0, column=0, sticky="ew", padx=12, pady=(16, 10))
-        for index, level in enumerate(LEVELS, start=1):
-            button = themed_button(
-                self.flash_rail,
-                variant="secondary",
-                text=level,
-                height=38,
-                corner_radius=9,
-                font=ctk.CTkFont(size=14),
-                command=lambda value=level: self.set_flash_level(value),
-            )
-            button.grid(row=index, column=0, sticky="ew", padx=12, pady=4)
-            self.flash_rail_buttons[level] = button
-
         header = ctk.CTkFrame(self.shell, fg_color="transparent")
-        header.grid(row=0, column=1, sticky="ew", pady=(0, 14))
+        header.grid(row=0, column=0, sticky="ew", pady=(0, 16))
         header.grid_columnconfigure(0, weight=1)
         self.title_label = ctk.CTkLabel(header, text="", font=ctk.CTkFont(size=31, weight="bold"), text_color=INK)
         self.title_label.grid(row=0, column=0, sticky="w")
-        self.count_label = ctk.CTkLabel(header, textvariable=self.count_var, text_color=MUTED, font=ctk.CTkFont(size=14))
-        self.count_label.grid(row=0, column=1, sticky="e")
         self.vocab_import_button = secondary_button(
             header,
-            text="Import",
-            width=106,
-            height=34,
+            text="Import CSV",
+            width=122,
+            height=44,
             image=None,
             compound="left",
             font=ctk.CTkFont(size=13, weight="bold"),
             command=self.open_vocab_import_file,
         )
-        self.vocab_import_button.grid(row=1, column=1, sticky="e", pady=(3, 0))
+        self.vocab_import_button.grid(row=0, column=1, rowspan=2, sticky="e")
         self.draw_import_icon()
         self.flash_header_actions = ctk.CTkFrame(header, fg_color="transparent")
         self.flash_header_actions.grid(row=0, column=1, rowspan=2, sticky="e")
@@ -379,7 +323,7 @@ class JLPTStudyApp(ctk.CTk):
         self.subtitle_label.grid(row=1, column=0, sticky="ew", pady=(3, 0))
 
         self.content = ctk.CTkFrame(self.shell, fg_color="transparent")
-        self.content.grid(row=1, column=1, sticky="nsew")
+        self.content.grid(row=1, column=0, sticky="nsew")
         self.content.grid_columnconfigure(0, weight=1)
         self.content.grid_rowconfigure(0, weight=1)
 
@@ -463,6 +407,15 @@ class JLPTStudyApp(ctk.CTk):
         self.vocab_edit_button.grid(row=0, column=0)
         self.update_vocab_edit_buttons()
 
+        self.count_label = ctk.CTkLabel(
+            self.vocab_controls,
+            textvariable=self.count_var,
+            text_color=MUTED,
+            font=ctk.CTkFont(size=14, weight="bold"),
+            anchor="w",
+        )
+        self.count_label.grid(row=1, column=0, sticky="w", pady=(12, 0))
+
         table_wrap = ctk.CTkFrame(self.vocab_sheet, fg_color=PANEL, border_width=1, border_color=LINE, corner_radius=14)
         table_wrap.grid(row=1, column=0, sticky="nsew")
         table_wrap.grid_columnconfigure(0, weight=1)
@@ -473,11 +426,258 @@ class JLPTStudyApp(ctk.CTk):
         self.bind_all("<Button-1>", self.clear_vocab_selection_on_outside_click, add="+")
 
         self._build_flashcards()
+        self._build_drawer()
         self.flash_view.grid(row=0, column=0, sticky="nsew")
         self.vocab_view.grid(row=0, column=0, sticky="nsew")
-        self.kana_rail.tkraise()
         self.vocab_view.tkraise()
         self.bind("<Configure>", self.schedule_root_layout_refresh, add="+")
+
+    def _build_drawer(self):
+        self.drawer_width = 344
+        self.drawer_scrim = tk.Frame(self, bg=theme_color(("#2A1117", "#080508")), bd=0, highlightthickness=0)
+        self.drawer_backdrop_label = tk.Label(
+            self.drawer_scrim,
+            bg=theme_color(("#2A1117", "#080508")),
+            bd=0,
+            highlightthickness=0,
+        )
+        self.drawer_backdrop_label.place(relx=0, rely=0, relwidth=1, relheight=1)
+        self.drawer_backdrop_label.bind("<Button-1>", lambda _event: self.close_drawer())
+
+        self.drawer_panel = ctk.CTkFrame(
+            self.drawer_scrim,
+            width=self.drawer_width,
+            corner_radius=0,
+            fg_color=PANEL,
+            border_width=1,
+            border_color=LINE,
+        )
+        self.drawer_panel.place(x=-self.drawer_width, y=0, relheight=1)
+        self.drawer_panel.grid_propagate(False)
+        self.drawer_panel.grid_columnconfigure(0, weight=1)
+        self.drawer_panel.grid_rowconfigure(6, weight=1)
+
+        drawer_header = ctk.CTkFrame(self.drawer_panel, height=72, corner_radius=0, fg_color=("#8F1717", "#4A0B14"))
+        drawer_header.grid(row=0, column=0, sticky="ew")
+        drawer_header.grid_propagate(False)
+        drawer_header.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(
+            drawer_header,
+            text="JLPT Kotoba",
+            text_color="#FFF7ED",
+            font=ctk.CTkFont(size=23, weight="bold"),
+        ).grid(row=0, column=0, sticky="w", padx=22, pady=20)
+        themed_button(
+            drawer_header,
+            variant="topbar",
+            text="×",
+            width=42,
+            height=42,
+            corner_radius=9,
+            font=ctk.CTkFont(size=24),
+            command=self.close_drawer,
+        ).grid(row=0, column=1, sticky="e", padx=16, pady=15)
+
+        ctk.CTkLabel(
+            self.drawer_panel,
+            text="Study",
+            text_color=MUTED,
+            font=ctk.CTkFont(size=12, weight="bold"),
+            anchor="w",
+        ).grid(row=1, column=0, sticky="ew", padx=20, pady=(18, 7))
+
+        nav = ctk.CTkFrame(self.drawer_panel, fg_color="transparent")
+        nav.grid(row=2, column=0, sticky="ew", padx=16)
+        nav.grid_columnconfigure((0, 1), weight=1)
+        self.nav_buttons = {}
+        for index, label in enumerate(("Vocabulary", "Flashcards")):
+            button = themed_button(
+                nav,
+                variant="secondary",
+                text=label,
+                height=44,
+                corner_radius=9,
+                font=ctk.CTkFont(size=14, weight="bold"),
+                command=lambda value=label: self.select_drawer_view(value),
+            )
+            button.grid(row=0, column=index, sticky="ew", padx=(0, 5) if index == 0 else (5, 0))
+            self.nav_buttons[label] = button
+
+        ctk.CTkLabel(
+            self.drawer_panel,
+            text="JLPT Level",
+            text_color=MUTED,
+            font=ctk.CTkFont(size=12, weight="bold"),
+            anchor="w",
+        ).grid(row=3, column=0, sticky="ew", padx=20, pady=(18, 7))
+
+        levels = ctk.CTkFrame(self.drawer_panel, fg_color="transparent")
+        levels.grid(row=4, column=0, sticky="ew", padx=16)
+        levels.grid_columnconfigure(tuple(range(len(LEVELS))), weight=1)
+        self.level_buttons = {}
+        for index, level in enumerate(LEVELS):
+            button = themed_button(
+                levels,
+                variant="secondary",
+                text=level,
+                width=52,
+                height=40,
+                corner_radius=9,
+                font=ctk.CTkFont(size=13, weight="bold"),
+                command=lambda value=level: self.select_drawer_level(value),
+            )
+            button.grid(row=0, column=index, sticky="ew", padx=3)
+            self.level_buttons[level] = button
+        self.flash_rail_buttons = self.level_buttons
+
+        ctk.CTkLabel(
+            self.drawer_panel,
+            text="Browse by Kana",
+            text_color=MUTED,
+            font=ctk.CTkFont(size=12, weight="bold"),
+            anchor="w",
+        ).grid(row=5, column=0, sticky="ew", padx=20, pady=(18, 7))
+
+        self.kana_rail = ctk.CTkFrame(
+            self.drawer_panel,
+            fg_color=PANEL,
+            border_width=1,
+            border_color=LINE,
+            corner_radius=12,
+        )
+        self.kana_rail.grid(row=6, column=0, sticky="nsew", padx=16, pady=(0, 16))
+        self.kana_rail.grid_columnconfigure(0, weight=1)
+        self.kana_rail.grid_rowconfigure(0, weight=1)
+        self.kana_rail_widget = KanaRail(
+            self.kana_rail,
+            self.toggle_kana_group,
+            self.jump_to_kana_from_drawer,
+            scale=self.kana_rail_scale(),
+        )
+        self.kana_rail_widget.grid(row=0, column=0, sticky="nsew", padx=6, pady=8)
+        self.drawer_scrim.bind("<Escape>", lambda _event: self.close_drawer())
+        self.drawer_x = -self.drawer_width
+        self.drawer_scrim.place_forget()
+
+    def create_drawer_backdrop_image(self):
+        try:
+            self.update_idletasks()
+            x = self.winfo_rootx()
+            y = self.winfo_rooty()
+            width = max(1, self.winfo_width())
+            height = max(1, self.winfo_height())
+            image = ImageGrab.grab(bbox=(x, y, x + width, y + height)).convert("RGB")
+            image = ImageEnhance.Brightness(image).enhance(0.55)
+            tint = Image.new("RGB", image.size, theme_color(("#3A151B", "#080508")))
+            image = Image.blend(image, tint, 0.16)
+            return ImageTk.PhotoImage(image)
+        except Exception:
+            return None
+
+    def open_drawer(self):
+        if not hasattr(self, "drawer_scrim"):
+            return
+        if self.drawer_open and self.drawer_animation_after_id is None:
+            return
+        if not self.drawer_scrim.winfo_ismapped():
+            self.drawer_backdrop_image = self.create_drawer_backdrop_image()
+            if self.drawer_backdrop_image is not None:
+                self.drawer_backdrop_label.configure(image=self.drawer_backdrop_image)
+            else:
+                self.drawer_backdrop_label.configure(
+                    image="",
+                    bg=theme_color(("#2A1117", "#080508")),
+                )
+            self.drawer_scrim.place(relx=0, rely=0, relwidth=1, relheight=1)
+            self.drawer_scrim.lift()
+            self.drawer_x = -self.drawer_width
+            self.drawer_panel.place_configure(x=self.drawer_x)
+            try:
+                self.drawer_scrim.grab_set()
+            except tk.TclError:
+                pass
+        self.set_nav_buttons(self.current_view, force=True)
+        active_level = self.flash_level_var.get() if self.current_view == "Flashcards" else self.current_level
+        self.set_level_buttons(active_level, force=True)
+        self.drawer_scrim.focus_set()
+        self.drawer_open = True
+        self.start_drawer_animation(0)
+        self.after(280, self.reveal_active_kana_in_drawer)
+
+    def close_drawer(self, after=None):
+        if after is not None:
+            self.drawer_close_callback = after
+        if not hasattr(self, "drawer_scrim") or not self.drawer_scrim.winfo_ismapped():
+            callback = self.drawer_close_callback
+            self.drawer_close_callback = None
+            if callback is not None:
+                callback()
+            return
+        self.drawer_open = False
+        self.start_drawer_animation(-self.drawer_width)
+
+    def start_drawer_animation(self, target_x):
+        if self.drawer_animation_after_id is not None:
+            try:
+                self.after_cancel(self.drawer_animation_after_id)
+            except tk.TclError:
+                pass
+            self.drawer_animation_after_id = None
+        self.drawer_animation_start = time.perf_counter()
+        self.drawer_animation_from = self.drawer_x
+        self.drawer_animation_to = target_x
+        distance = abs(target_x - self.drawer_x)
+        self.drawer_animation_duration = max(0.11, 0.24 * (distance / max(1, self.drawer_width)))
+        self.animate_drawer()
+
+    def animate_drawer(self):
+        elapsed = time.perf_counter() - self.drawer_animation_start
+        progress = min(1.0, elapsed / max(0.01, self.drawer_animation_duration))
+        eased = ease_out_cubic(progress)
+        self.drawer_x = round(
+            self.drawer_animation_from
+            + (self.drawer_animation_to - self.drawer_animation_from) * eased
+        )
+        try:
+            self.drawer_panel.place_configure(x=self.drawer_x)
+        except tk.TclError:
+            self.drawer_animation_after_id = None
+            return
+        if progress < 1.0:
+            self.drawer_animation_after_id = self.after(16, self.animate_drawer)
+            return
+        self.drawer_animation_after_id = None
+        self.drawer_x = self.drawer_animation_to
+        if self.drawer_x <= -self.drawer_width:
+            try:
+                self.drawer_scrim.grab_release()
+            except tk.TclError:
+                pass
+            self.drawer_scrim.place_forget()
+            self.drawer_backdrop_label.configure(image="")
+            self.drawer_backdrop_image = None
+            callback = self.drawer_close_callback
+            self.drawer_close_callback = None
+            if callback is not None:
+                self.after_idle(callback)
+
+    def select_drawer_view(self, view):
+        self.switch_view(view)
+        self.close_drawer()
+
+    def select_drawer_level(self, level):
+        if self.current_view == "Flashcards":
+            self.set_flash_level(level)
+        else:
+            self.show_vocabulary(level)
+        self.close_drawer()
+
+    def jump_to_kana_from_drawer(self, kana):
+        self.close_drawer(after=lambda value=kana: self.jump_to_kana(value))
+
+    def reveal_active_kana_in_drawer(self):
+        if self.drawer_open and hasattr(self, "kana_rail_widget"):
+            self.kana_rail_widget.reveal_active()
 
     def clear_vocab_selection_on_outside_click(self, event):
         if not hasattr(self, "vocab_table") or event.widget is self.vocab_table.body:
@@ -1009,16 +1209,24 @@ class JLPTStudyApp(ctk.CTk):
 
         actions = ctk.CTkFrame(self.flash_view, fg_color="transparent")
         actions.grid(row=1, column=0, sticky="ew", pady=(18, 0))
-        actions.grid_columnconfigure((0, 1), weight=1)
-        self.back_button = red_button(actions, text="Back", height=44, command=self.previous_card)
+        actions.grid_columnconfigure((0, 1, 2), weight=1)
+        self.back_button = secondary_button(actions, text="Back", height=46, command=self.previous_card)
         self.back_button.grid(row=0, column=0, sticky="ew", padx=(0, 6))
+        self.reveal_button = red_button(
+            actions,
+            text="Start",
+            height=46,
+            font=ctk.CTkFont(size=14, weight="bold"),
+            command=self.handle_flash_card_click,
+        )
+        self.reveal_button.grid(row=0, column=1, sticky="ew", padx=6)
         self.restart_button = secondary_button(
             actions,
             text="Restart",
-            height=44,
+            height=46,
             command=self.confirm_restart_flashcards,
         )
-        self.restart_button.grid(row=0, column=1, sticky="ew", padx=(6, 0))
+        self.restart_button.grid(row=0, column=2, sticky="ew", padx=(6, 0))
         self.restart_button.bind("<Enter>", self.prepare_restart_overlay_cache)
 
     def _configure_tree_style(self):
@@ -1143,6 +1351,8 @@ class JLPTStudyApp(ctk.CTk):
     def toggle_theme(self):
         next_mode = "Light" if ctk.get_appearance_mode() == "Dark" else "Dark"
         ctk.set_appearance_mode(next_mode)
+        if hasattr(self, "theme_button"):
+            self.theme_button.configure(text="Dark" if next_mode == "Light" else "Light")
         self.draw_search_icon()
         self.draw_import_icon()
         self.update_vocab_edit_buttons()
@@ -1167,18 +1377,15 @@ class JLPTStudyApp(ctk.CTk):
                 self.show_vocabulary(self.current_level)
             else:
                 self.prepare_vocabulary_for_view_switch()
-                self.side_slot.grid(row=0, column=0, rowspan=2, sticky="ns", padx=(0, 18))
-                if "levels_spacer" in self.__dict__:
-                    self.levels_spacer.tkraise()
                 self.show_flash_header_actions()
-                self.title_label.configure(text="Flashcards")
-                self.subtitle_label.configure(text="Test Your Knowledge Here :)")
+                level = self.flash_level_var.get()
+                self.title_label.configure(text=f"JLPT {level} Flashcards")
+                self.subtitle_label.configure(text="Tap the card to reveal and continue.")
                 self.count_var.set("")
                 if self.flashcards_ready:
-                    self.update_flash_rail_buttons()
+                    self.update_flash_rail_buttons(force=True)
                 else:
                     self.reset_flashcards()
-                self.flash_rail.tkraise()
                 self.flash_view.tkraise()
             if paint_locked:
                 self.update_idletasks()
@@ -1206,19 +1413,15 @@ class JLPTStudyApp(ctk.CTk):
         self.current_view = "Vocabulary"
         if hasattr(self, "vocab_table"):
             self.vocab_table.set_rendering_enabled(True)
-        self.side_slot.grid(row=0, column=0, rowspan=2, sticky="ns", padx=(0, 18))
-        if "levels_bar" in self.__dict__:
-            self.levels_bar.tkraise()
         self.show_vocab_header_status()
         self.set_nav_buttons("Vocabulary")
         self.set_level_buttons(level)
         self.title_label.configure(text=f"JLPT {level} Vocabulary")
         if self.words(level):
-            self.subtitle_label.configure(text="Browse by kana order, search the list, or use the jump rail.")
+            self.subtitle_label.configure(text="Search or browse the complete list.")
         else:
             self.subtitle_label.configure(text="This level is not filled yet. Import a CSV when you're ready.")
         self.render_vocab_rows()
-        self.kana_rail.tkraise()
         self.vocab_view.tkraise()
         self.show_vocab_header_status()
 
@@ -1253,32 +1456,30 @@ class JLPTStudyApp(ctk.CTk):
         if not hasattr(self, "vocab_view"):
             return
         if self.current_view == "Flashcards":
-            if "levels_spacer" in self.__dict__:
-                self.levels_spacer.tkraise()
             self.show_flash_header_actions()
-            self.flash_rail.tkraise()
             self.flash_view.tkraise()
         else:
             if hasattr(self, "vocab_table"):
                 self.vocab_table.set_rendering_enabled(True)
-            if "levels_bar" in self.__dict__:
-                self.levels_bar.tkraise()
             self.show_vocab_header_status()
-            self.kana_rail.tkraise()
             self.vocab_view.tkraise()
 
-    def set_nav_buttons(self, active):
-        if self.active_nav_button == active:
+    def set_nav_buttons(self, active, force=False):
+        if not hasattr(self, "nav_buttons"):
+            return
+        if not force and self.active_nav_button == active:
             return
         for name, button in self.nav_buttons.items():
-            apply_button_style(button, "topbar_active" if name == active else "topbar")
+            apply_button_style(button, "primary" if name == active else "secondary")
         self.active_nav_button = active
 
-    def set_level_buttons(self, active):
-        if self.active_level_button == active:
+    def set_level_buttons(self, active, force=False):
+        if not hasattr(self, "level_buttons"):
+            return
+        if not force and self.active_level_button == active:
             return
         for item_level, button in self.level_buttons.items():
-            apply_button_style(button, "topbar_active" if item_level == active else "topbar")
+            apply_button_style(button, "primary" if item_level == active else "secondary")
         self.active_level_button = active
 
     def schedule_vocab_render(self):
@@ -1516,7 +1717,9 @@ class JLPTStudyApp(ctk.CTk):
 
     def set_flash_level(self, level):
         self.flash_level_var.set(level)
-        self.set_level_buttons(level)
+        self.set_level_buttons(level, force=True)
+        if self.current_view == "Flashcards" and hasattr(self, "title_label"):
+            self.title_label.configure(text=f"JLPT {level} Flashcards")
         self.reset_flashcards()
 
     def update_flash_rail_buttons(self, force=False):
@@ -1525,9 +1728,8 @@ class JLPTStudyApp(ctk.CTk):
         level = self.flash_level_var.get()
         if not force and self.flash_rail_selected_level == level:
             return
-        for item_level, button in self.flash_rail_buttons.items():
-            selected = item_level == level
-            apply_button_style(button, "primary" if selected else "secondary")
+        if self.current_view == "Flashcards":
+            self.set_level_buttons(level, force=True)
         self.flash_rail_selected_level = level
 
     def bind_flash_card_clicks(self):
@@ -1667,6 +1869,25 @@ class JLPTStudyApp(ctk.CTk):
     def update_flashcard_action_buttons(self):
         if "back_button" not in self.__dict__:
             return
+        if "reveal_button" in self.__dict__:
+            if self.flash_complete:
+                self.reveal_button.configure(
+                    text="Complete",
+                    state="disabled",
+                    fg_color=BUTTON_DISABLED_BG,
+                    hover_color=BUTTON_DISABLED_BG,
+                    border_color=theme_color(LINE),
+                    text_color=BUTTON_DISABLED_TEXT,
+                    text_color_disabled=BUTTON_DISABLED_TEXT,
+                )
+            else:
+                reveal_text = "Start" if not self.flash_deck else ("Next" if self.card_answer_visible else "Reveal")
+                self.reveal_button.configure(
+                    text=reveal_text,
+                    state="normal",
+                    **button_style("primary"),
+                    text_color_disabled=BUTTON_DISABLED_TEXT,
+                )
         disabled = not self.flash_deck or (not self.flash_complete and self.flash_index <= 0)
         if disabled:
             self.back_button.configure(
@@ -1680,7 +1901,7 @@ class JLPTStudyApp(ctk.CTk):
             return
         self.back_button.configure(
             state="normal",
-            **button_style("primary"),
+            **button_style("secondary"),
             text_color_disabled=BUTTON_DISABLED_TEXT,
         )
 
@@ -2432,6 +2653,35 @@ class KanaRail(tk.Frame):
             self.progress.update(targets)
             self.draw()
 
+    def reveal_active(self):
+        if not self.active_kana:
+            return
+        self.draw()
+        target = None
+        group_kana = KANA_GROUP_BY_MEMBER.get(self.active_kana)
+        for x1, y1, x2, y2, item in self.hitboxes:
+            if item == ("kana", self.active_kana):
+                target = (y1, y2)
+                break
+            if target is None and item == ("group", group_kana):
+                target = (y1, y2)
+        if target is None:
+            return
+        visible_top = self.canvas.canvasy(0)
+        visible_height = max(1, self.canvas.winfo_height())
+        visible_bottom = visible_top + visible_height
+        padding = round(14 * self.scale)
+        target_top, target_bottom = target
+        if target_top >= visible_top + padding and target_bottom <= visible_bottom - padding:
+            return
+        bbox = self.canvas.bbox("all")
+        content_height = max(visible_height, bbox[3] if bbox else visible_height)
+        if target_top < visible_top + padding:
+            next_top = max(0, target_top - padding)
+        else:
+            next_top = min(content_height - visible_height, target_bottom - visible_height + padding)
+        self.canvas.yview_moveto(next_top / max(1, content_height))
+
     def start_animation(self, targets):
         self.cancel_animation()
         self.animation_start = time.perf_counter()
@@ -2792,7 +3042,8 @@ class VocabGrid(tk.Frame):
         self.ink = theme_color(INK)
         self.muted = theme_color(MUTED)
         self.grid_line = theme_color(TABLE_GRID)
-        self.header_bg = "#421923" if ctk.get_appearance_mode() == "Dark" else "#F8E8DD"
+        self.header_bg = "#5B0D18" if ctk.get_appearance_mode() == "Dark" else "#8F1717"
+        self.header_text = "#FFF7ED"
         self.section_bg = "#2A1721" if ctk.get_appearance_mode() == "Dark" else "#FFF9F1"
         self.row_alt_bg = theme_color(TABLE_ROW_ALT)
         self.hover_bg = theme_color(TABLE_ROW_HOVER)
@@ -2902,7 +3153,7 @@ class VocabGrid(tk.Frame):
                 edges[index] + self.cell_pad,
                 self.header_height / 2,
                 text=label,
-                fill=self.ink,
+                fill=self.header_text,
                 anchor="w",
                 font=self.header_font,
             )
@@ -2966,7 +3217,7 @@ class VocabGrid(tk.Frame):
                         edges[column_index] + self.cell_pad,
                         y0 + self.table_header_height / 2,
                         text=label,
-                        fill=self.ink,
+                        fill=self.header_text,
                         anchor="w",
                         font=self.header_font,
                     )
