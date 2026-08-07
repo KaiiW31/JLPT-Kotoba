@@ -178,6 +178,10 @@ class JLPTStudyApp(ctk.CTk):
         self.drawer_target_x = 0
         self.drawer_velocity = 0.0
         self.drawer_last_frame = None
+        self.drawer_close_started_at = None
+        self.drawer_close_start_x = 0.0
+        self.drawer_close_start_velocity = 0.0
+        self.drawer_close_duration = 0.24
         self.drawer_backdrop_image = None
         self.drawer_backdrop_cache = None
         self.drawer_backdrop_cache_key = None
@@ -656,6 +660,18 @@ class JLPTStudyApp(ctk.CTk):
             next_direction = self.drawer_target_x - self.drawer_x
             if self.drawer_velocity * next_direction < 0:
                 self.drawer_velocity *= 0.22
+            if self.drawer_target_x < 0:
+                self.drawer_close_started_at = time.perf_counter()
+                self.drawer_close_start_x = self.drawer_x
+                self.drawer_close_start_velocity = self.drawer_velocity
+                distance = abs(self.drawer_target_x - self.drawer_x)
+                self.drawer_close_duration = max(
+                    0.14,
+                    0.24 * (distance / max(1, self.drawer_width)),
+                )
+            else:
+                self.drawer_close_started_at = None
+                self.drawer_last_frame = time.perf_counter()
         if self.drawer_animation_after_id is not None:
             return
         self.drawer_last_frame = time.perf_counter()
@@ -663,15 +679,44 @@ class JLPTStudyApp(ctk.CTk):
 
     def animate_drawer(self):
         now = time.perf_counter()
-        elapsed = now - (self.drawer_last_frame or now)
-        self.drawer_last_frame = now
-        delta_time = max(1 / 240, min(1 / 20, elapsed))
-        offset = self.drawer_x - self.drawer_target_x
-        angular_frequency = 34.0
-        decay = math.exp(-angular_frequency * delta_time)
-        velocity_term = (self.drawer_velocity + angular_frequency * offset) * delta_time
-        self.drawer_x = self.drawer_target_x + (offset + velocity_term) * decay
-        self.drawer_velocity = (self.drawer_velocity - angular_frequency * velocity_term) * decay
+        closing = self.drawer_target_x < 0 and self.drawer_close_started_at is not None
+        if closing:
+            progress = min(
+                1.0,
+                (now - self.drawer_close_started_at) / max(0.01, self.drawer_close_duration),
+            )
+            progress_squared = progress * progress
+            progress_cubed = progress_squared * progress
+            start_x = self.drawer_close_start_x
+            target_x = self.drawer_target_x
+            start_tangent = self.drawer_close_start_velocity * self.drawer_close_duration
+            h00 = (2 * progress_cubed) - (3 * progress_squared) + 1
+            h10 = progress_cubed - (2 * progress_squared) + progress
+            h01 = (-2 * progress_cubed) + (3 * progress_squared)
+            self.drawer_x = (h00 * start_x) + (h10 * start_tangent) + (h01 * target_x)
+            if progress < 1.0:
+                dh00 = (6 * progress_squared) - (6 * progress)
+                dh10 = (3 * progress_squared) - (4 * progress) + 1
+                dh01 = (-6 * progress_squared) + (6 * progress)
+                self.drawer_velocity = (
+                    (dh00 * start_x) + (dh10 * start_tangent) + (dh01 * target_x)
+                ) / self.drawer_close_duration
+            else:
+                self.drawer_x = target_x
+                self.drawer_velocity = 0.0
+            finished = progress >= 1.0
+        else:
+            elapsed = now - (self.drawer_last_frame or now)
+            self.drawer_last_frame = now
+            delta_time = max(1 / 240, min(1 / 20, elapsed))
+            offset = self.drawer_x - self.drawer_target_x
+            angular_frequency = 34.0
+            decay = math.exp(-angular_frequency * delta_time)
+            velocity_term = (self.drawer_velocity + angular_frequency * offset) * delta_time
+            self.drawer_x = self.drawer_target_x + (offset + velocity_term) * decay
+            self.drawer_velocity = (self.drawer_velocity - angular_frequency * velocity_term) * decay
+            remaining = self.drawer_target_x - self.drawer_x
+            finished = abs(remaining) <= 0.45 and abs(self.drawer_velocity) <= 6.0
 
         if self.drawer_target_x == 0 and self.drawer_x > 0:
             self.drawer_x = 0.0
@@ -685,13 +730,13 @@ class JLPTStudyApp(ctk.CTk):
             self.drawer_animation_after_id = None
             return
 
-        remaining = self.drawer_target_x - self.drawer_x
-        if abs(remaining) > 0.45 or abs(self.drawer_velocity) > 6.0:
+        if not finished:
             self.drawer_animation_after_id = self.after(15, self.animate_drawer)
             return
         self.drawer_animation_after_id = None
         self.drawer_x = self.drawer_target_x
         self.drawer_velocity = 0.0
+        self.drawer_close_started_at = None
         self.drawer_panel.place_configure(x=round(self.drawer_x))
         if self.drawer_x <= -self.drawer_width:
             try:
