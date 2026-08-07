@@ -18,6 +18,7 @@ Both apps work locally. No account, internet permission, analytics, or cloud sto
 ## Windows features
 
 - Compact APK-style toolbar and animated slide-out study menu
+- Responsive split-screen layout down to a 600×480 window
 - Automatic active-kana tracking with smooth jumps to each vocabulary section
 - Clearly separated, aligned per-hiragana vocabulary tables
 - Full-text search, CSV importing, and editing for custom vocabulary

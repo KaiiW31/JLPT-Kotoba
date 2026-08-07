@@ -126,7 +126,7 @@ class JLPTStudyApp(ctk.CTk):
         ctk.set_widget_scaling(UI_SCALE)
         self.title("JLPT Kotoba")
         self.geometry("1280x780")
-        self.minsize(1040, 680)
+        self.minsize(600, 480)
         self.configure(fg_color=PAPER)
         if ICON_PATH.exists():
             self.iconbitmap(ICON_PATH)
@@ -164,6 +164,7 @@ class JLPTStudyApp(ctk.CTk):
         self.custom_vocab = self.load_custom_vocabulary()
         self.search_after_id = None
         self.root_configure_after_id = None
+        self.responsive_compact = None
         self.last_vocab_render_key = None
         self.tree_items_by_kana = {}
         self.expanded_kana_groups = set()
@@ -221,10 +222,11 @@ class JLPTStudyApp(ctk.CTk):
         )
         self.menu_button.grid(row=0, column=0, sticky="w", padx=(22, 14), pady=13)
 
+        self.brand_font = ctk.CTkFont(size=25, weight="bold")
         self.brand_label = ctk.CTkLabel(
             self.topbar,
             text="JLPT Kotoba",
-            font=ctk.CTkFont(size=25, weight="bold"),
+            font=self.brand_font,
             text_color="#FFF7ED",
         )
         self.brand_label.grid(row=0, column=1, sticky="w")
@@ -246,13 +248,14 @@ class JLPTStudyApp(ctk.CTk):
         self.shell.grid_columnconfigure(0, weight=1)
         self.shell.grid_rowconfigure(1, weight=1)
 
-        header = ctk.CTkFrame(self.shell, fg_color="transparent")
-        header.grid(row=0, column=0, sticky="ew", pady=(0, 16))
-        header.grid_columnconfigure(0, weight=1)
-        self.title_label = ctk.CTkLabel(header, text="", font=ctk.CTkFont(size=31, weight="bold"), text_color=INK)
+        self.header = ctk.CTkFrame(self.shell, fg_color="transparent")
+        self.header.grid(row=0, column=0, sticky="ew", pady=(0, 16))
+        self.header.grid_columnconfigure(0, weight=1)
+        self.title_font = ctk.CTkFont(size=31, weight="bold")
+        self.title_label = ctk.CTkLabel(self.header, text="", font=self.title_font, text_color=INK)
         self.title_label.grid(row=0, column=0, sticky="w")
         self.vocab_import_button = secondary_button(
-            header,
+            self.header,
             text="Import CSV",
             width=122,
             height=44,
@@ -263,7 +266,7 @@ class JLPTStudyApp(ctk.CTk):
         )
         self.vocab_import_button.grid(row=0, column=1, rowspan=2, sticky="e")
         self.draw_import_icon()
-        self.flash_header_actions = ctk.CTkFrame(header, fg_color="transparent")
+        self.flash_header_actions = ctk.CTkFrame(self.header, fg_color="transparent")
         self.flash_header_actions.grid(row=0, column=1, rowspan=2, sticky="e")
         self.flash_header_actions.grid_columnconfigure((0, 1), weight=0)
         self.flash_save_status_panel = ctk.CTkFrame(
@@ -319,7 +322,7 @@ class JLPTStudyApp(ctk.CTk):
         )
         self.flash_save_button.grid(row=0, column=1, sticky="e")
         self.flash_header_actions.grid_remove()
-        self.subtitle_label = ctk.CTkLabel(header, text="", text_color=MUTED, anchor="w", font=ctk.CTkFont(size=14))
+        self.subtitle_label = ctk.CTkLabel(self.header, text="", text_color=MUTED, anchor="w", font=ctk.CTkFont(size=14))
         self.subtitle_label.grid(row=1, column=0, sticky="ew", pady=(3, 0))
 
         self.content = ctk.CTkFrame(self.shell, fg_color="transparent")
@@ -431,6 +434,7 @@ class JLPTStudyApp(ctk.CTk):
         self.vocab_view.grid(row=0, column=0, sticky="nsew")
         self.vocab_view.tkraise()
         self.bind("<Configure>", self.schedule_root_layout_refresh, add="+")
+        self.after_idle(self.apply_responsive_layout)
 
     def _build_drawer(self):
         self.drawer_width = 344
@@ -1068,14 +1072,56 @@ class JLPTStudyApp(ctk.CTk):
     def schedule_root_layout_refresh(self, _event=None):
         if self.root_configure_after_id is not None:
             return
-        self.root_configure_after_id = self.after(160, self.refresh_root_layout)
+        self.root_configure_after_id = self.after(80, self.refresh_root_layout)
 
     def refresh_root_layout(self):
         self.root_configure_after_id = None
         self.display_scale = detect_display_scale(self)
+        self.apply_responsive_layout()
         if hasattr(self, "kana_rail_widget"):
             self.kana_rail_widget.set_scale(self.kana_rail_scale())
         self.sync_current_view_layout()
+
+    def apply_responsive_layout(self):
+        if not hasattr(self, "header"):
+            return
+        logical_width = self.winfo_width() / max(1.0, getattr(self, "display_scale", 1.0))
+        compact = logical_width < 820
+        if compact == self.responsive_compact:
+            return
+        self.responsive_compact = compact
+
+        if compact:
+            self.shell.grid_configure(padx=16, pady=(16, 18))
+            self.header.grid_configure(pady=(0, 12))
+            self.menu_button.configure(width=44, height=42)
+            self.menu_button.grid_configure(padx=(14, 10), pady=15)
+            self.brand_font.configure(size=22)
+            self.title_font.configure(size=26)
+            self.theme_button.configure(width=76, height=40)
+            self.theme_button.grid_configure(padx=14, pady=16)
+            self.vocab_import_button.configure(width=108, height=40)
+            self.vocab_import_button.grid_configure(row=2, column=0, rowspan=1, sticky="e", pady=(10, 0))
+            self.flash_header_actions.grid_configure(row=2, column=0, rowspan=1, sticky="e", pady=(10, 0))
+            self.search_entry.configure(placeholder_text="Search vocabulary...")
+        else:
+            self.shell.grid_configure(padx=28, pady=(24, 26))
+            self.header.grid_configure(pady=(0, 16))
+            self.menu_button.configure(width=48, height=46)
+            self.menu_button.grid_configure(padx=(22, 14), pady=13)
+            self.brand_font.configure(size=25)
+            self.title_font.configure(size=31)
+            self.theme_button.configure(width=88, height=42)
+            self.theme_button.grid_configure(padx=22, pady=15)
+            self.vocab_import_button.configure(width=122, height=44)
+            self.vocab_import_button.grid_configure(row=0, column=1, rowspan=2, sticky="e", pady=0)
+            self.flash_header_actions.grid_configure(row=0, column=1, rowspan=2, sticky="e", pady=0)
+            self.search_entry.configure(placeholder_text="Search kanji, kana, romaji, or meaning...")
+
+        if self.current_view == "Flashcards":
+            self.show_flash_header_actions()
+        else:
+            self.show_vocab_header_status()
 
     def kana_rail_scale(self):
         return max(1.0, min(1.35, getattr(self, "display_scale", 1.0)))
@@ -3113,10 +3159,17 @@ class VocabGrid(tk.Frame):
 
     def column_edges(self, width):
         table_width = self.table_width(width)
+        if table_width < 960:
+            ratios = (0.20, 0.25, 0.18)
+            fixed_widths = [round(table_width * ratio) for ratio in ratios]
+            meaning_width = table_width - sum(fixed_widths)
+            widths = [*fixed_widths, meaning_width]
+            edges = [self.table_left(width)]
+            for column_width in widths:
+                edges.append(edges[-1] + column_width)
+            return edges
         width_scale = min(1.25, self.scale)
         fixed_widths = [round(170 * width_scale), round(190 * width_scale), round(150 * width_scale)]
-        if table_width < 900:
-            fixed_widths = [round(150 * width_scale), round(170 * width_scale), round(130 * width_scale)]
         meaning_width = max(330, table_width - sum(fixed_widths))
         widths = [*fixed_widths, meaning_width]
         edges = [self.table_left(width)]
@@ -3128,7 +3181,7 @@ class VocabGrid(tk.Frame):
         return max(16, int((width - self.table_width(width)) / 2))
 
     def table_width(self, width):
-        return min(1500, max(660, width - 32))
+        return min(1500, max(480, width - 32))
 
     def draw_header(self):
         if not self.rendering_enabled:
