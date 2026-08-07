@@ -174,12 +174,13 @@ class JLPTStudyApp(ctk.CTk):
         self.import_icon_image = None
         self.drawer_open = False
         self.drawer_animation_after_id = None
-        self.drawer_animation_start = None
-        self.drawer_animation_from = 0
-        self.drawer_animation_to = 0
-        self.drawer_animation_duration = 0.24
         self.drawer_x = 0
+        self.drawer_target_x = 0
+        self.drawer_velocity = 0.0
+        self.drawer_last_frame = None
         self.drawer_backdrop_image = None
+        self.drawer_backdrop_cache = None
+        self.drawer_backdrop_cache_key = None
         self.drawer_close_callback = None
 
         self.search_var = ctk.StringVar()
@@ -221,6 +222,7 @@ class JLPTStudyApp(ctk.CTk):
             command=self.open_drawer,
         )
         self.menu_button.grid(row=0, column=0, sticky="w", padx=(22, 14), pady=13)
+        self.menu_button.bind("<Enter>", self.prepare_drawer_backdrop_cache, add="+")
 
         self.brand_font = ctk.CTkFont(size=25, weight="bold")
         self.brand_label = ctk.CTkLabel(
@@ -435,6 +437,7 @@ class JLPTStudyApp(ctk.CTk):
         self.vocab_view.tkraise()
         self.bind("<Configure>", self.schedule_root_layout_refresh, add="+")
         self.after_idle(self.apply_responsive_layout)
+        self.after(420, self.prepare_drawer_backdrop_cache)
 
     def _build_drawer(self):
         self.drawer_width = 344
@@ -561,7 +564,27 @@ class JLPTStudyApp(ctk.CTk):
         self.kana_rail_widget.grid(row=0, column=0, sticky="nsew", padx=6, pady=8)
         self.drawer_scrim.bind("<Escape>", lambda _event: self.close_drawer())
         self.drawer_x = -self.drawer_width
+        self.drawer_target_x = self.drawer_x
         self.drawer_scrim.place_forget()
+
+    def drawer_backdrop_key(self):
+        return (
+            ctk.get_appearance_mode(),
+            self.winfo_width(),
+            self.winfo_height(),
+            self.current_view,
+            self.current_level,
+            self.flash_level_var.get(),
+        )
+
+    def prepare_drawer_backdrop_cache(self, _event=None):
+        if self.drawer_open or self.drawer_animation_after_id is not None:
+            return
+        cache_key = self.drawer_backdrop_key()
+        if self.drawer_backdrop_cache_key == cache_key and self.drawer_backdrop_cache is not None:
+            return
+        self.drawer_backdrop_cache = self.create_drawer_backdrop_image()
+        self.drawer_backdrop_cache_key = cache_key if self.drawer_backdrop_cache is not None else None
 
     def create_drawer_backdrop_image(self):
         try:
@@ -583,8 +606,12 @@ class JLPTStudyApp(ctk.CTk):
             return
         if self.drawer_open and self.drawer_animation_after_id is None:
             return
-        if not self.drawer_scrim.winfo_ismapped():
-            self.drawer_backdrop_image = self.create_drawer_backdrop_image()
+        if not self.drawer_scrim.place_info():
+            cache_key = self.drawer_backdrop_key()
+            if self.drawer_backdrop_cache_key == cache_key and self.drawer_backdrop_cache is not None:
+                self.drawer_backdrop_image = self.drawer_backdrop_cache
+            else:
+                self.drawer_backdrop_image = self.create_drawer_backdrop_image()
             if self.drawer_backdrop_image is not None:
                 self.drawer_backdrop_label.configure(image=self.drawer_backdrop_image)
             else:
@@ -595,6 +622,8 @@ class JLPTStudyApp(ctk.CTk):
             self.drawer_scrim.place(relx=0, rely=0, relwidth=1, relheight=1)
             self.drawer_scrim.lift()
             self.drawer_x = -self.drawer_width
+            self.drawer_target_x = self.drawer_x
+            self.drawer_velocity = 0.0
             self.drawer_panel.place_configure(x=self.drawer_x)
             try:
                 self.drawer_scrim.grab_set()
@@ -611,7 +640,7 @@ class JLPTStudyApp(ctk.CTk):
     def close_drawer(self, after=None):
         if after is not None:
             self.drawer_close_callback = after
-        if not hasattr(self, "drawer_scrim") or not self.drawer_scrim.winfo_ismapped():
+        if not hasattr(self, "drawer_scrim") or not self.drawer_scrim.place_info():
             callback = self.drawer_close_callback
             self.drawer_close_callback = None
             if callback is not None:
@@ -621,37 +650,49 @@ class JLPTStudyApp(ctk.CTk):
         self.start_drawer_animation(-self.drawer_width)
 
     def start_drawer_animation(self, target_x):
+        previous_target = self.drawer_target_x
+        self.drawer_target_x = float(target_x)
+        if previous_target != self.drawer_target_x:
+            next_direction = self.drawer_target_x - self.drawer_x
+            if self.drawer_velocity * next_direction < 0:
+                self.drawer_velocity *= 0.22
         if self.drawer_animation_after_id is not None:
-            try:
-                self.after_cancel(self.drawer_animation_after_id)
-            except tk.TclError:
-                pass
-            self.drawer_animation_after_id = None
-        self.drawer_animation_start = time.perf_counter()
-        self.drawer_animation_from = self.drawer_x
-        self.drawer_animation_to = target_x
-        distance = abs(target_x - self.drawer_x)
-        self.drawer_animation_duration = max(0.11, 0.24 * (distance / max(1, self.drawer_width)))
-        self.animate_drawer()
+            return
+        self.drawer_last_frame = time.perf_counter()
+        self.drawer_animation_after_id = self.after(0, self.animate_drawer)
 
     def animate_drawer(self):
-        elapsed = time.perf_counter() - self.drawer_animation_start
-        progress = min(1.0, elapsed / max(0.01, self.drawer_animation_duration))
-        eased = ease_out_cubic(progress)
-        self.drawer_x = round(
-            self.drawer_animation_from
-            + (self.drawer_animation_to - self.drawer_animation_from) * eased
-        )
+        now = time.perf_counter()
+        elapsed = now - (self.drawer_last_frame or now)
+        self.drawer_last_frame = now
+        delta_time = max(1 / 240, min(1 / 20, elapsed))
+        offset = self.drawer_x - self.drawer_target_x
+        angular_frequency = 34.0
+        decay = math.exp(-angular_frequency * delta_time)
+        velocity_term = (self.drawer_velocity + angular_frequency * offset) * delta_time
+        self.drawer_x = self.drawer_target_x + (offset + velocity_term) * decay
+        self.drawer_velocity = (self.drawer_velocity - angular_frequency * velocity_term) * decay
+
+        if self.drawer_target_x == 0 and self.drawer_x > 0:
+            self.drawer_x = 0.0
+            self.drawer_velocity = 0.0
+        elif self.drawer_target_x < 0 and self.drawer_x < self.drawer_target_x:
+            self.drawer_x = self.drawer_target_x
+            self.drawer_velocity = 0.0
         try:
-            self.drawer_panel.place_configure(x=self.drawer_x)
+            self.drawer_panel.place_configure(x=round(self.drawer_x))
         except tk.TclError:
             self.drawer_animation_after_id = None
             return
-        if progress < 1.0:
-            self.drawer_animation_after_id = self.after(16, self.animate_drawer)
+
+        remaining = self.drawer_target_x - self.drawer_x
+        if abs(remaining) > 0.45 or abs(self.drawer_velocity) > 6.0:
+            self.drawer_animation_after_id = self.after(15, self.animate_drawer)
             return
         self.drawer_animation_after_id = None
-        self.drawer_x = self.drawer_animation_to
+        self.drawer_x = self.drawer_target_x
+        self.drawer_velocity = 0.0
+        self.drawer_panel.place_configure(x=round(self.drawer_x))
         if self.drawer_x <= -self.drawer_width:
             try:
                 self.drawer_scrim.grab_release()
@@ -660,6 +701,9 @@ class JLPTStudyApp(ctk.CTk):
             self.drawer_scrim.place_forget()
             self.drawer_backdrop_label.configure(image="")
             self.drawer_backdrop_image = None
+            self.drawer_backdrop_cache = None
+            self.drawer_backdrop_cache_key = None
+            self.after(220, self.prepare_drawer_backdrop_cache)
             callback = self.drawer_close_callback
             self.drawer_close_callback = None
             if callback is not None:
