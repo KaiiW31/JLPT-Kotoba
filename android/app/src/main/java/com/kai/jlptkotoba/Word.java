@@ -10,13 +10,15 @@ final class Word {
     final String kanji;
     final String furigana;
     final String romaji;
+    final String type;
     final String meaning;
     final boolean custom;
 
-    Word(String kanji, String furigana, String romaji, String meaning, boolean custom) {
+    Word(String kanji, String furigana, String romaji, String type, String meaning, boolean custom) {
         this.kanji = clean(kanji);
         this.furigana = clean(furigana);
         this.romaji = clean(romaji);
+        this.type = clean(type);
         this.meaning = clean(meaning);
         this.custom = custom;
     }
@@ -26,7 +28,7 @@ final class Word {
     }
 
     String contentKey() {
-        return (kanji + "\u001f" + furigana + "\u001f" + romaji + "\u001f" + meaning)
+        return (kanji + "\u001f" + furigana + "\u001f" + romaji + "\u001f" + type + "\u001f" + meaning)
                 .toLowerCase(Locale.ROOT);
     }
 
@@ -35,25 +37,27 @@ final class Word {
         if (normalized.isEmpty()) {
             return true;
         }
-        return (kanji + " " + furigana + " " + romaji + " " + meaning)
+        return (kanji + " " + furigana + " " + romaji + " " + type + " " + meaning)
                 .toLowerCase(Locale.ROOT)
                 .contains(normalized);
     }
 
     JSONObject toJson() throws JSONException {
         JSONObject object = new JSONObject();
-        object.put("kanji", kanji);
-        object.put("furigana", furigana);
+        object.put("word", kanji);
+        object.put("reading", furigana);
         object.put("romaji", romaji);
+        object.put("type", type);
         object.put("meaning", meaning);
         return object;
     }
 
     static Word fromJson(JSONObject object, boolean custom) {
         return new Word(
-                object.optString("kanji"),
-                object.optString("furigana"),
+                object.optString("word", object.optString("kanji")),
+                object.optString("reading", object.optString("furigana")),
                 object.optString("romaji"),
+                object.optString("type"),
                 object.optString("meaning"),
                 custom
         );

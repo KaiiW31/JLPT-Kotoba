@@ -28,10 +28,10 @@ final class CsvImporter {
 
             List<String> headers = parseLine(headerLine);
             Map<String, Integer> columns = resolveColumns(headers);
-            if (!columns.containsKey("furigana")
-                    || !columns.containsKey("romaji")
+            if (!columns.containsKey("kanji")
+                    || !columns.containsKey("furigana")
                     || !columns.containsKey("meaning")) {
-                throw new IOException("CSV needs furigana, romaji, and meaning columns.");
+                throw new IOException("CSV needs word, reading, and meaning columns.");
             }
 
             List<Word> words = new ArrayList<>();
@@ -45,10 +45,11 @@ final class CsvImporter {
                         value(values, columns.get("kanji")),
                         value(values, columns.get("furigana")),
                         value(values, columns.get("romaji")),
+                        value(values, columns.get("type")),
                         value(values, columns.get("meaning")),
                         true
                 );
-                if (!word.furigana.isEmpty() && !word.romaji.isEmpty() && !word.meaning.isEmpty()) {
+                if (!word.kanji.isEmpty() && !word.furigana.isEmpty() && !word.meaning.isEmpty()) {
                     words.add(word);
                 }
             }
@@ -93,6 +94,8 @@ final class CsvImporter {
                 columns.putIfAbsent("furigana", index);
             } else if (matches(header, "romaji", "romanji", "romanization", "romanisation")) {
                 columns.putIfAbsent("romaji", index);
+            } else if (matches(header, "type", "wordtype", "partofspeech", "pos")) {
+                columns.putIfAbsent("type", index);
             } else if (matches(header, "meaning", "english", "definition", "translation")) {
                 columns.putIfAbsent("meaning", index);
             }

@@ -44,11 +44,12 @@ SOURCE_DIR = Path(__file__).resolve().parent
 APP_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else SOURCE_DIR.parent
 BUNDLE_DIR = Path(getattr(sys, "_MEIPASS", SOURCE_DIR))
 ICON_PATH = BUNDLE_DIR / "assets" / "app_icon.ico"
-DATA_PATH = BUNDLE_DIR / "data" / "vocabulary.json"
+DATA_PATH = BUNDLE_DIR / "data" / "study_data.json"
 PROGRESS_PATH = APP_DIR / "flashcard_progress.json"
 CUSTOM_VOCAB_PATH = APP_DIR / "custom_vocabulary.json"
 
 LEVELS = ["N5", "N4", "N3", "N2", "N1"]
+STUDY_VIEWS = ["Vocabulary", "Flashcards", "Grammar", "Kanji"]
 ACCENT = "#B91C1C"
 ACCENT_DARK = "#A11D26"
 ACCENT_HOVER = "#991B1B"
@@ -183,6 +184,13 @@ class JLPTStudyApp(ctk.CTk):
         self.drawer_backdrop_cache = None
         self.drawer_backdrop_cache_key = None
         self.drawer_close_callback = None
+        self.settings_open = False
+        self.settings_animation_after_id = None
+        self.settings_x = 0.0
+        self.settings_target_x = 0.0
+        self.settings_animation_start_x = 0.0
+        self.settings_animation_started_at = None
+        self.settings_animation_duration = 0.26
 
         self.search_var = ctk.StringVar()
         self.flash_level_var = ctk.StringVar(value="N5")
@@ -234,17 +242,17 @@ class JLPTStudyApp(ctk.CTk):
         )
         self.brand_label.grid(row=0, column=1, sticky="w")
 
-        self.theme_button = themed_button(
+        self.settings_button = themed_button(
             self.topbar,
             variant="topbar_active",
-            text="Light" if ctk.get_appearance_mode() == "Dark" else "Dark",
-            width=88,
+            text="Settings",
+            width=96,
             height=42,
             corner_radius=10,
             font=ctk.CTkFont(size=14),
-            command=self.toggle_theme,
+            command=self.open_settings,
         )
-        self.theme_button.grid(row=0, column=2, sticky="e", padx=22, pady=15)
+        self.settings_button.grid(row=0, column=2, sticky="e", padx=22, pady=15)
 
         self.shell = ctk.CTkFrame(self, fg_color="transparent")
         self.shell.grid(row=1, column=0, sticky="nsew", padx=28, pady=(24, 26))
@@ -411,6 +419,7 @@ class JLPTStudyApp(ctk.CTk):
             command=lambda: self.open_vocab_editor("edit"),
         )
         self.vocab_edit_button.grid(row=0, column=0)
+        self.vocab_edit_actions.grid_remove()
         self.update_vocab_edit_buttons()
 
         self.count_label = ctk.CTkLabel(
@@ -433,6 +442,7 @@ class JLPTStudyApp(ctk.CTk):
 
         self._build_flashcards()
         self._build_drawer()
+        self._build_settings_drawer()
         self.flash_view.grid(row=0, column=0, sticky="nsew")
         self.vocab_view.grid(row=0, column=0, sticky="nsew")
         self.vocab_view.tkraise()
@@ -498,7 +508,7 @@ class JLPTStudyApp(ctk.CTk):
         nav.grid(row=2, column=0, sticky="ew", padx=16)
         nav.grid_columnconfigure((0, 1), weight=1)
         self.nav_buttons = {}
-        for index, label in enumerate(("Vocabulary", "Flashcards")):
+        for index, label in enumerate(STUDY_VIEWS):
             button = themed_button(
                 nav,
                 variant="secondary",
@@ -508,7 +518,14 @@ class JLPTStudyApp(ctk.CTk):
                 font=ctk.CTkFont(size=14, weight="bold"),
                 command=lambda value=label: self.select_drawer_view(value),
             )
-            button.grid(row=0, column=index, sticky="ew", padx=(0, 5) if index == 0 else (5, 0))
+            row, column = divmod(index, 2)
+            button.grid(
+                row=row,
+                column=column,
+                sticky="ew",
+                padx=(0, 5) if column == 0 else (5, 0),
+                pady=(0, 5) if row == 0 else (5, 0),
+            )
             self.nav_buttons[label] = button
 
         ctk.CTkLabel(
@@ -538,13 +555,14 @@ class JLPTStudyApp(ctk.CTk):
             self.level_buttons[level] = button
         self.flash_rail_buttons = self.level_buttons
 
-        ctk.CTkLabel(
+        self.browse_kana_label = ctk.CTkLabel(
             self.drawer_panel,
             text="Browse by Kana",
             text_color=MUTED,
             font=ctk.CTkFont(size=12, weight="bold"),
             anchor="w",
-        ).grid(row=5, column=0, sticky="ew", padx=20, pady=(18, 7))
+        )
+        self.browse_kana_label.grid(row=5, column=0, sticky="ew", padx=20, pady=(18, 7))
 
         self.kana_rail = ctk.CTkFrame(
             self.drawer_panel,
@@ -567,6 +585,161 @@ class JLPTStudyApp(ctk.CTk):
         self.drawer_x = -self.drawer_width
         self.drawer_target_x = self.drawer_x
         self.drawer_scrim.place_forget()
+
+    def _build_settings_drawer(self):
+        self.settings_width = 344
+        self.settings_scrim = tk.Frame(
+            self,
+            bg=theme_color(("#2A1117", "#080508")),
+            bd=0,
+            highlightthickness=0,
+        )
+        settings_backdrop = tk.Frame(
+            self.settings_scrim,
+            bg=theme_color(("#2A1117", "#080508")),
+            bd=0,
+            highlightthickness=0,
+        )
+        settings_backdrop.place(relx=0, rely=0, relwidth=1, relheight=1)
+        settings_backdrop.bind("<Button-1>", lambda _event: self.close_settings())
+
+        self.settings_panel = ctk.CTkFrame(
+            self.settings_scrim,
+            width=self.settings_width,
+            corner_radius=0,
+            fg_color=PANEL,
+            border_width=1,
+            border_color=LINE,
+        )
+        self.settings_panel.place(x=self.winfo_width(), y=0, relheight=1)
+        self.settings_panel.grid_propagate(False)
+        self.settings_panel.grid_columnconfigure(0, weight=1)
+
+        header = ctk.CTkFrame(self.settings_panel, height=72, corner_radius=0, fg_color=("#8F1717", "#4A0B14"))
+        header.grid(row=0, column=0, sticky="ew")
+        header.grid_propagate(False)
+        header.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(
+            header,
+            text="Settings",
+            text_color="#FFF7ED",
+            font=ctk.CTkFont(size=23, weight="bold"),
+        ).grid(row=0, column=0, sticky="w", padx=22, pady=20)
+        themed_button(
+            header,
+            variant="topbar",
+            text="×",
+            width=42,
+            height=42,
+            corner_radius=9,
+            font=ctk.CTkFont(size=24),
+            command=self.close_settings,
+        ).grid(row=0, column=1, sticky="e", padx=16, pady=15)
+
+        body = ctk.CTkFrame(self.settings_panel, fg_color="transparent")
+        body.grid(row=1, column=0, sticky="nsew", padx=18, pady=18)
+        body.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(body, text="APPEARANCE", text_color=MUTED, font=ctk.CTkFont(size=11, weight="bold"), anchor="w").grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        self.settings_theme_button = secondary_button(
+            body,
+            text=self.theme_action_text(),
+            height=46,
+            command=self.toggle_theme,
+        )
+        self.settings_theme_button.grid(row=1, column=0, sticky="ew")
+
+        ctk.CTkLabel(body, text="VOCABULARY", text_color=MUTED, font=ctk.CTkFont(size=11, weight="bold"), anchor="w").grid(row=2, column=0, sticky="ew", pady=(22, 8))
+        self.settings_edit_button = secondary_button(
+            body,
+            text="Edit selected word",
+            height=46,
+            command=lambda: self.close_settings_then(lambda: self.open_vocab_editor("edit")),
+        )
+        self.settings_edit_button.grid(row=3, column=0, sticky="ew")
+        self.settings_import_button = secondary_button(
+            body,
+            text="Import CSV",
+            height=46,
+            command=lambda: self.close_settings_then(self.open_vocab_import_file),
+        )
+        self.settings_import_button.grid(row=4, column=0, sticky="ew", pady=(10, 0))
+        ctk.CTkLabel(
+            body,
+            text="Study lists: JLPT Sensei\nAvailable offline after installation.",
+            text_color=MUTED,
+            justify="left",
+            anchor="w",
+            font=ctk.CTkFont(size=12),
+        ).grid(row=5, column=0, sticky="ew", pady=(26, 0))
+        self.settings_scrim.bind("<Escape>", lambda _event: self.close_settings())
+        self.settings_scrim.place_forget()
+        self.update_vocab_edit_buttons()
+
+    def theme_action_text(self):
+        return "Use light theme" if ctk.get_appearance_mode() == "Dark" else "Use dark theme"
+
+    def open_settings(self):
+        if self.settings_open and self.settings_animation_after_id is None:
+            return
+        if not self.settings_scrim.place_info():
+            self.settings_scrim.place(relx=0, rely=0, relwidth=1, relheight=1)
+            self.settings_scrim.lift()
+            self.settings_x = float(self.winfo_width())
+            self.settings_target_x = self.settings_x
+            self.settings_panel.place_configure(x=round(self.settings_x))
+        self.settings_theme_button.configure(text=self.theme_action_text())
+        self.update_vocab_edit_buttons()
+        self.settings_scrim.focus_set()
+        self.settings_open = True
+        self.start_settings_animation(max(0, self.winfo_width() - self.settings_width))
+
+    def close_settings(self):
+        if not self.settings_scrim.place_info():
+            return
+        self.settings_open = False
+        self.start_settings_animation(self.winfo_width())
+
+    def close_settings_then(self, callback):
+        if not self.settings_scrim.place_info():
+            callback()
+            return
+        self.close_settings()
+        self.after(280, callback)
+
+    def start_settings_animation(self, target_x):
+        self.settings_target_x = float(target_x)
+        self.settings_animation_start_x = self.settings_x
+        distance_fraction = abs(self.settings_target_x - self.settings_x) / max(1, self.settings_width)
+        self.settings_animation_duration = max(0.12, 0.26 * distance_fraction)
+        self.settings_animation_started_at = time.perf_counter()
+        if self.settings_animation_after_id is None:
+            self.settings_animation_after_id = self.after(0, self.animate_settings)
+
+    def animate_settings(self):
+        elapsed = time.perf_counter() - (self.settings_animation_started_at or time.perf_counter())
+        progress = min(1.0, elapsed / max(0.01, self.settings_animation_duration))
+        eased = 1.0 - ((1.0 - progress) ** 2)
+        self.settings_x = self.settings_animation_start_x + ((self.settings_target_x - self.settings_animation_start_x) * eased)
+        self.settings_panel.place_configure(x=round(self.settings_x))
+        if progress < 1.0:
+            self.settings_animation_after_id = self.after(15, self.animate_settings)
+            return
+        self.settings_animation_after_id = None
+        self.settings_x = self.settings_target_x
+        self.settings_panel.place_configure(x=round(self.settings_x))
+        if not self.settings_open:
+            self.settings_scrim.place_forget()
+
+    def sync_drawer_content(self):
+        vocabulary_mode = self.current_view == "Vocabulary"
+        if vocabulary_mode:
+            self.browse_kana_label.grid()
+            self.kana_rail.grid()
+        else:
+            self.browse_kana_label.grid_remove()
+            self.kana_rail.grid_remove()
+        n1_enabled = self.current_view in {"Grammar", "Kanji"}
+        self.level_buttons["N1"].configure(state="normal" if n1_enabled else "disabled")
 
     def drawer_backdrop_key(self):
         return (
@@ -630,6 +803,7 @@ class JLPTStudyApp(ctk.CTk):
             except tk.TclError:
                 pass
         self.set_nav_buttons(self.current_view, force=True)
+        self.sync_drawer_content()
         active_level = self.flash_level_var.get() if self.current_view == "Flashcards" else self.current_level
         self.set_level_buttons(active_level, force=True)
         self.drawer_scrim.focus_set()
@@ -699,12 +873,19 @@ class JLPTStudyApp(ctk.CTk):
                 self.after_idle(callback)
 
     def select_drawer_view(self, view):
+        if view != self.current_view:
+            self.search_var.set("")
         self.switch_view(view)
         self.close_drawer()
 
     def select_drawer_level(self, level):
+        active_level = self.flash_level_var.get() if self.current_view == "Flashcards" else self.current_level
+        if level != active_level:
+            self.search_var.set("")
         if self.current_view == "Flashcards":
             self.set_flash_level(level)
+        elif self.current_view in {"Grammar", "Kanji"}:
+            self.show_reference(self.current_view, level)
         else:
             self.show_vocabulary(level)
         self.close_drawer()
@@ -753,9 +934,13 @@ class JLPTStudyApp(ctk.CTk):
             text_color=BUTTON_SECONDARY_TEXT if selected else BUTTON_DISABLED_TEXT,
             text_color_disabled=BUTTON_DISABLED_TEXT,
         )
+        if "settings_edit_button" in self.__dict__:
+            self.settings_edit_button.configure(state=state)
+        if "settings_import_button" in self.__dict__:
+            self.settings_import_button.configure(state="normal" if self.current_view == "Vocabulary" else "disabled")
 
     def selected_vocab_word(self):
-        if "vocab_table" not in self.__dict__:
+        if self.current_view != "Vocabulary" or "vocab_table" not in self.__dict__:
             return None
         index = self.vocab_table.selected_index
         if index is None or index < 0 or index >= len(self.vocab_table.rows):
@@ -779,7 +964,7 @@ class JLPTStudyApp(ctk.CTk):
         fields_frame.pack(fill="x", padx=28)
         entries = {}
         source = selected or {}
-        for row, (key, label) in enumerate((("kanji", "Kanji"), ("furigana", "Furigana"), ("romaji", "Romaji"), ("meaning", "Meaning"))):
+        for row, (key, label) in enumerate((("kanji", "Word"), ("furigana", "Reading"), ("romaji", "Romaji"), ("type", "Type"), ("meaning", "Meaning"))):
             ctk.CTkLabel(fields_frame, text=label, text_color=MUTED, anchor="w", font=ctk.CTkFont(size=12, weight="bold")).grid(row=row * 2, column=0, sticky="ew", pady=(0 if row == 0 else 7, 2))
             entry = ctk.CTkEntry(
                 fields_frame,
@@ -806,9 +991,9 @@ class JLPTStudyApp(ctk.CTk):
             self.close_vocab_editor()
 
         def save():
-            word = {key: entries[key].get().strip() for key in ("kanji", "furigana", "romaji", "meaning")}
-            if not word["furigana"] or not word["romaji"] or not word["meaning"]:
-                error_var.set("Furigana, romaji, and meaning are required.")
+            word = {key: entries[key].get().strip() for key in ("kanji", "furigana", "romaji", "type", "meaning")}
+            if not word["kanji"] or not word["furigana"] or not word["meaning"]:
+                error_var.set("Word, reading, and meaning are required.")
                 return
             if mode == "add":
                 self.add_custom_vocab_word(self.current_level, word)
@@ -1131,12 +1316,12 @@ class JLPTStudyApp(ctk.CTk):
             self.menu_button.grid_configure(padx=(14, 10), pady=15)
             self.brand_font.configure(size=22)
             self.title_font.configure(size=26)
-            self.theme_button.configure(width=76, height=40)
-            self.theme_button.grid_configure(padx=14, pady=16)
+            self.settings_button.configure(width=82, height=40, text="Settings")
+            self.settings_button.grid_configure(padx=14, pady=16)
             self.vocab_import_button.configure(width=108, height=40)
             self.vocab_import_button.grid_configure(row=2, column=0, rowspan=1, sticky="e", pady=(10, 0))
             self.flash_header_actions.grid_configure(row=2, column=0, rowspan=1, sticky="e", pady=(10, 0))
-            self.search_entry.configure(placeholder_text="Search vocabulary...")
+            self.search_entry.configure(placeholder_text=self.search_placeholder(compact=True))
         else:
             self.shell.grid_configure(padx=28, pady=(24, 26))
             self.header.grid_configure(pady=(0, 16))
@@ -1144,17 +1329,24 @@ class JLPTStudyApp(ctk.CTk):
             self.menu_button.grid_configure(padx=(22, 14), pady=13)
             self.brand_font.configure(size=25)
             self.title_font.configure(size=31)
-            self.theme_button.configure(width=88, height=42)
-            self.theme_button.grid_configure(padx=22, pady=15)
+            self.settings_button.configure(width=96, height=42, text="Settings")
+            self.settings_button.grid_configure(padx=22, pady=15)
             self.vocab_import_button.configure(width=122, height=44)
             self.vocab_import_button.grid_configure(row=0, column=1, rowspan=2, sticky="e", pady=0)
             self.flash_header_actions.grid_configure(row=0, column=1, rowspan=2, sticky="e", pady=0)
-            self.search_entry.configure(placeholder_text="Search kanji, kana, romaji, or meaning...")
+            self.search_entry.configure(placeholder_text=self.search_placeholder(compact=False))
 
         if self.current_view == "Flashcards":
             self.show_flash_header_actions()
         else:
             self.show_vocab_header_status()
+
+    def search_placeholder(self, compact=False):
+        if self.current_view == "Grammar":
+            return "Search grammar..." if compact else "Search grammar, romaji, or meaning..."
+        if self.current_view == "Kanji":
+            return "Search kanji..." if compact else "Search kanji, readings, or meaning..."
+        return "Search vocabulary..." if compact else "Search word, reading, romaji, type, or meaning..."
 
     def kana_rail_scale(self):
         return max(1.0, min(1.35, getattr(self, "display_scale", 1.0)))
@@ -1430,8 +1622,8 @@ class JLPTStudyApp(ctk.CTk):
     def toggle_theme(self):
         next_mode = "Light" if ctk.get_appearance_mode() == "Dark" else "Dark"
         ctk.set_appearance_mode(next_mode)
-        if hasattr(self, "theme_button"):
-            self.theme_button.configure(text="Dark" if next_mode == "Light" else "Light")
+        if hasattr(self, "settings_theme_button"):
+            self.settings_theme_button.configure(text=self.theme_action_text())
         self.draw_search_icon()
         self.draw_import_icon()
         self.update_vocab_edit_buttons()
@@ -1453,8 +1645,14 @@ class JLPTStudyApp(ctk.CTk):
             self.current_view = view
             self.set_nav_buttons(view)
             if view == "Vocabulary":
+                if self.current_level == "N1":
+                    self.current_level = "N2"
                 self.show_vocabulary(self.current_level)
+            elif view in {"Grammar", "Kanji"}:
+                self.show_reference(view, self.current_level)
             else:
+                if self.flash_level_var.get() == "N1":
+                    self.flash_level_var.set("N2")
                 self.prepare_vocabulary_for_view_switch()
                 self.show_flash_header_actions()
                 level = self.flash_level_var.get()
@@ -1488,6 +1686,8 @@ class JLPTStudyApp(ctk.CTk):
             pass
 
     def show_vocabulary(self, level):
+        if level == "N1":
+            level = "N2"
         self.current_level = level
         self.current_view = "Vocabulary"
         if hasattr(self, "vocab_table"):
@@ -1496,13 +1696,27 @@ class JLPTStudyApp(ctk.CTk):
         self.set_nav_buttons("Vocabulary")
         self.set_level_buttons(level)
         self.title_label.configure(text=f"JLPT {level} Vocabulary")
-        if self.words(level):
-            self.subtitle_label.configure(text="Search or browse the complete list.")
-        else:
-            self.subtitle_label.configure(text="This level is not filled yet. Import a CSV when you're ready.")
+        self.subtitle_label.configure(text="Search or browse the complete list.")
+        self.search_entry.configure(textvariable=self.search_var, placeholder_text=self.search_placeholder(self.responsive_compact is True))
+        self.last_vocab_render_key = None
         self.render_vocab_rows()
         self.vocab_view.tkraise()
         self.show_vocab_header_status()
+
+    def show_reference(self, section, level):
+        self.current_level = level
+        self.current_view = section
+        if hasattr(self, "vocab_table"):
+            self.vocab_table.set_rendering_enabled(True)
+        self.show_vocab_header_status()
+        self.set_nav_buttons(section)
+        self.set_level_buttons(level)
+        self.title_label.configure(text=f"JLPT {level} {section}")
+        self.subtitle_label.configure(text=f"Search or browse the complete {section.lower()} list.")
+        self.search_entry.configure(textvariable=self.search_var, placeholder_text=self.search_placeholder(self.responsive_compact is True))
+        self.last_vocab_render_key = None
+        self.render_vocab_rows()
+        self.vocab_view.tkraise()
 
     def prepare_vocabulary_for_view_switch(self):
         if hasattr(self, "vocab_table"):
@@ -1529,7 +1743,7 @@ class JLPTStudyApp(ctk.CTk):
         if "count_label" in self.__dict__:
             self.count_label.grid()
         if "vocab_import_button" in self.__dict__:
-            self.vocab_import_button.grid()
+            self.vocab_import_button.grid_remove()
 
     def sync_current_view_layout(self):
         if not hasattr(self, "vocab_view"):
@@ -1568,23 +1782,32 @@ class JLPTStudyApp(ctk.CTk):
 
     def render_vocab_rows(self):
         self.search_after_id = None
-        words = self.words(self.current_level)
+        if self.current_view == "Vocabulary":
+            words = self.words(self.current_level)
+            searchable_keys = ("kanji", "furigana", "romaji", "type", "meaning")
+            unit = "words"
+        else:
+            words = [dict(item) for item in self.data[self.current_view.lower()].get(self.current_level, [])]
+            searchable_keys = tuple(key for key in words[0] if key != "source_url") if words else ()
+            unit = "grammar points" if self.current_view == "Grammar" else "kanji"
         query = self.search_var.get().strip().lower()
-        render_key = (self.current_level, query)
+        render_key = (self.current_view, self.current_level, query)
         if render_key == self.last_vocab_render_key:
             self.update_kana_buttons()
             return
         self.last_vocab_render_key = render_key
         if query:
-            words = [word for word in words if query in " ".join(str(word.get(key, "")) for key in ("kanji", "furigana", "romaji", "meaning")).lower()]
+            words = [word for word in words if query in " ".join(str(word.get(key, "")) for key in searchable_keys).lower()]
 
-        self.count_var.set(f"{len(words)} words" if words else "Coming soon")
+        self.count_var.set(f"{len(words)} {unit}" if words else "0 matches")
         self.tree_items_by_kana = {}
 
-        for row_index, word in enumerate(words):
-            kana = normalized_first_kana(word["furigana"])
-            self.tree_items_by_kana.setdefault(kana, row_index)
+        if self.current_view == "Vocabulary":
+            for row_index, word in enumerate(words):
+                kana = normalized_first_kana(word["furigana"])
+                self.tree_items_by_kana.setdefault(kana, row_index)
 
+        self.vocab_table.configure_mode(self.current_view)
         self.vocab_table.set_rows(words)
         self.update_kana_buttons()
         self.update_vocab_edit_buttons()
@@ -1626,6 +1849,9 @@ class JLPTStudyApp(ctk.CTk):
         self.update_kana_buttons(animated=changed)
 
     def update_kana_buttons(self, animated=False):
+        if self.current_view != "Vocabulary":
+            self.kana_rail_widget.set_state(set(), None, set(), animated=False)
+            return
         available = set(self.tree_items_by_kana)
         self.kana_rail_widget.set_state(available, self.active_kana, self.expanded_kana_groups, animated=animated)
 
@@ -1672,8 +1898,8 @@ class JLPTStudyApp(ctk.CTk):
             self.apply_flashcard_style()
             return
         self.card_front_var.set(f"JLPT {level}")
-        self.card_back_var.set("Ready")
-        self.card_hint_var.set("")
+        self.card_back_var.set(f"{len(self.words(level))} cards")
+        self.card_hint_var.set("Tap the center or Start to begin.")
         self.apply_flashcard_style()
 
     def clear_saved_flashcards(self, level):
@@ -1795,6 +2021,8 @@ class JLPTStudyApp(ctk.CTk):
             return None
 
     def set_flash_level(self, level):
+        if level == "N1":
+            return
         self.flash_level_var.set(level)
         self.set_level_buttons(level, force=True)
         if self.current_view == "Flashcards" and hasattr(self, "title_label"):
@@ -1819,7 +2047,20 @@ class JLPTStudyApp(ctk.CTk):
         self.confetti_canvas.bind("<Leave>", self.handle_completion_canvas_leave)
         self.confetti_canvas.bind("<Configure>", self.handle_completion_canvas_configure)
 
-    def handle_flash_card_click(self, _event=None):
+    def handle_flash_card_click(self, event=None):
+        if event is not None and "flash_card" in self.__dict__:
+            card_width = max(1, self.flash_card.winfo_width())
+            pointer_x = event.x_root - self.flash_card.winfo_rootx()
+            if pointer_x < card_width * 0.34:
+                if self.flash_deck:
+                    self.previous_card()
+                return
+            if pointer_x > card_width * 0.66:
+                if self.flash_deck:
+                    self.next_card()
+                else:
+                    self.start_flashcards()
+                return
         if not self.flash_deck:
             self.start_flashcards()
             return
@@ -2563,7 +2804,7 @@ class JLPTStudyApp(ctk.CTk):
             level_data = self.custom_level_data(level)
             removed = set(level_data.get("removed", []))
             words = []
-            for base_word in self.data["levels"].get(level, []):
+            for base_word in self.data["vocabulary"].get(level, []):
                 key = vocab_word_key(base_word)
                 if key in removed:
                     continue
@@ -2601,9 +2842,10 @@ def blend_hex(start, end, amount):
 
 def clean_vocab_word(word):
     return {
-        "kanji": str(word.get("kanji", "")).strip(),
-        "furigana": str(word.get("furigana", "")).strip(),
+        "kanji": str(word.get("word", word.get("kanji", ""))).strip(),
+        "furigana": str(word.get("reading", word.get("furigana", ""))).strip(),
         "romaji": str(word.get("romaji", "")).strip(),
+        "type": str(word.get("type", "")).strip(),
         "meaning": str(word.get("meaning", "")).strip(),
     }
 
@@ -2611,7 +2853,7 @@ def clean_vocab_word(word):
 def vocab_word_key(word):
     cleaned = clean_vocab_word(word)
     return json.dumps(
-        [cleaned["kanji"], cleaned["furigana"], cleaned["romaji"], cleaned["meaning"]],
+        [cleaned["kanji"], cleaned["furigana"], cleaned["romaji"], cleaned["type"], cleaned["meaning"]],
         ensure_ascii=False,
     )
 
@@ -2959,6 +3201,7 @@ CSV_HEADER_ALIASES = {
     "kanji": ("kanji", "word", "vocab", "vocabulary", "term", "japanese"),
     "furigana": ("furigana", "kana", "hiragana", "reading", "yomikata"),
     "romaji": ("romaji", "romanji", "roumaji", "romaji reading", "romanized"),
+    "type": ("type", "word type", "part of speech", "pos"),
     "meaning": ("meaning", "english", "definition", "translation", "gloss"),
 }
 
@@ -2989,9 +3232,9 @@ def load_vocabulary_csv(path):
             if not reader.fieldnames:
                 raise ValueError("CSV needs a header row.")
             columns = {key: find_csv_column(reader.fieldnames, aliases) for key, aliases in CSV_HEADER_ALIASES.items()}
-            missing = [key for key in ("furigana", "romaji", "meaning") if columns[key] is None]
+            missing = [key for key in ("kanji", "furigana", "meaning") if columns[key] is None]
             if missing:
-                expected = "kanji, furigana, romaji, meaning"
+                expected = "word, reading, romaji, type (optional), meaning"
                 raise ValueError(f"CSV is missing {', '.join(missing)}. Expected columns: {expected}.")
 
             words = []
@@ -3003,7 +3246,7 @@ def load_vocabulary_csv(path):
                 }
                 if not any(word.values()):
                     continue
-                if not word["furigana"] or not word["romaji"] or not word["meaning"]:
+                if not word["kanji"] or not word["furigana"] or not word["meaning"]:
                     invalid_rows.append(row_number)
                     continue
                 words.append(clean_vocab_word(word))
@@ -3012,7 +3255,7 @@ def load_vocabulary_csv(path):
 
     if invalid_rows:
         first_bad_row = invalid_rows[0]
-        raise ValueError(f"{len(invalid_rows)} row(s) are missing furigana, romaji, or meaning. First bad row: {first_bad_row}.")
+        raise ValueError(f"{len(invalid_rows)} row(s) are missing word, reading, or meaning. First bad row: {first_bad_row}.")
     if not words:
         raise ValueError("No vocabulary rows found in that CSV.")
     return words
@@ -3041,12 +3284,10 @@ class VocabGrid(tk.Frame):
         self.active_kana_callback = active_kana_callback
         self.selection_callback = selection_callback
         self.synced_kana = None
-        self.columns = [
-            ("kanji", "Kanji", 170),
-            ("furigana", "Furigana", 190),
-            ("romaji", "Romaji", 150),
-            ("meaning", "Meaning", 560),
-        ]
+        self.mode = "Vocabulary"
+        self.group_by_kana = True
+        self.columns = []
+        self.configure_mode(self.mode)
         self.rows = []
         self.items = []
         self.item_tops = []
@@ -3063,6 +3304,7 @@ class VocabGrid(tk.Frame):
         self.selection_alpha = 1
         self.selection_animation_job = None
         self.scroll_animation_job = None
+        self.scrollbar_hide_job = None
         self.apply_scale(scale)
         self.header_height = 0
 
@@ -3074,8 +3316,9 @@ class VocabGrid(tk.Frame):
         self.body = tk.Canvas(self, bd=0, highlightthickness=0, yscrollincrement=1)
         self.body.grid(row=0, column=0, sticky="nsew")
         self.scrollbar = ctk.CTkScrollbar(self, command=self.on_scrollbar)
-        self.scrollbar.grid(row=0, column=1, sticky="ns")
         self.body.configure(yscrollcommand=self.set_scrollbar)
+        self.scrollbar.bind("<ButtonPress-1>", lambda _event: self.show_transient_scrollbar(), add="+")
+        self.scrollbar.bind("<B1-Motion>", lambda _event: self.show_transient_scrollbar(), add="+")
 
         self.header.bind("<Configure>", lambda _event: self.draw_header())
         self.body.bind("<Configure>", lambda _event: self.draw_body())
@@ -3086,10 +3329,42 @@ class VocabGrid(tk.Frame):
         self.header.bind("<MouseWheel>", self.on_mousewheel)
         self.refresh_theme()
 
+    def configure_mode(self, mode):
+        self.mode = mode
+        self.group_by_kana = mode == "Vocabulary"
+        if mode == "Vocabulary":
+            self.columns = [
+                ("kanji", "Word", 1.15),
+                ("furigana", "Reading", 1.15),
+                ("romaji", "Romaji", 0.95),
+                ("type", "Type", 1.35),
+                ("meaning", "Meaning", 2.2),
+            ]
+        elif mode == "Grammar":
+            self.columns = [
+                ("pattern", "Grammar", 1.5),
+                ("romaji", "Romaji", 1.15),
+                ("meaning", "Meaning", 2.75),
+            ]
+        else:
+            self.columns = [
+                ("kanji", "Kanji", 0.65),
+                ("onyomi", "On'yomi", 1.8),
+                ("kunyomi", "Kun'yomi", 1.8),
+                ("meaning", "Meaning", 2.25),
+            ]
+        if hasattr(self, "body"):
+            # Rows from the previous mode use a different schema; render_vocab_rows
+            # immediately supplies the new mode's rows after this reconfiguration.
+            self.rows = []
+            self.build_items()
+            self.body.configure(scrollregion=(0, 0, 0, max(1, self.content_height())))
+            self.draw_body()
+
     def apply_scale(self, scale):
         self.scale = scale
         self.cell_pad = round(10 * scale)
-        self.row_height = round(39 * scale)
+        self.row_height = round(54 * scale)
         self.table_header_height = round(36 * scale)
         self.section_height = round(60 * scale)
         self.section_gap = round(42 * scale)
@@ -3150,6 +3425,13 @@ class VocabGrid(tk.Frame):
 
     def build_items(self):
         self.items = []
+        if not self.group_by_kana:
+            if self.rows:
+                self.items.append({"kind": "table_header"})
+            for row_index, row in enumerate(self.rows):
+                self.items.append({"kind": "word", "word": row, "row_index": row_index})
+            self.recalculate_positions()
+            return
         last_kana = None
         for row_index, word in enumerate(self.rows):
             kana = normalized_first_kana(word["furigana"])
@@ -3192,19 +3474,9 @@ class VocabGrid(tk.Frame):
 
     def column_edges(self, width):
         table_width = self.table_width(width)
-        if table_width < 960:
-            ratios = (0.20, 0.25, 0.18)
-            fixed_widths = [round(table_width * ratio) for ratio in ratios]
-            meaning_width = table_width - sum(fixed_widths)
-            widths = [*fixed_widths, meaning_width]
-            edges = [self.table_left(width)]
-            for column_width in widths:
-                edges.append(edges[-1] + column_width)
-            return edges
-        width_scale = min(1.25, self.scale)
-        fixed_widths = [round(170 * width_scale), round(190 * width_scale), round(150 * width_scale)]
-        meaning_width = max(330, table_width - sum(fixed_widths))
-        widths = [*fixed_widths, meaning_width]
+        total_weight = sum(column[2] for column in self.columns)
+        widths = [round(table_width * column[2] / total_weight) for column in self.columns[:-1]]
+        widths.append(table_width - sum(widths))
         edges = [self.table_left(width)]
         for column_width in widths:
             edges.append(edges[-1] + column_width)
@@ -3318,12 +3590,7 @@ class VocabGrid(tk.Frame):
                 row_fill = blend_hex(row_fill, self.selected_bg, self.selection_alpha)
             elif row_index == self.hover_index:
                 row_fill = self.hover_bg
-            values = [
-                word["kanji"],
-                word["furigana"],
-                word["romaji"],
-                word["meaning"],
-            ]
+            values = [str(word.get(key, "")) for key, _label, _weight in self.columns]
             for column_index, value in enumerate(values):
                 self.body.create_rectangle(
                     edges[column_index],
@@ -3341,6 +3608,7 @@ class VocabGrid(tk.Frame):
                     fill=self.selected_text if selected else ((ACCENT if ctk.get_appearance_mode() == "Light" else "#FFD1C1") if column_index == 0 and value else self.ink),
                     anchor="w",
                     font=self.row_font,
+                    width=max(24, edges[column_index + 1] - edges[column_index] - (self.cell_pad * 2)),
                 )
             next_item = self.items[item_index + 1] if item_index + 1 < len(self.items) else None
             if next_item is None or next_item.get("kind") != "word":
@@ -3370,6 +3638,7 @@ class VocabGrid(tk.Frame):
 
     def on_mousewheel(self, event):
         self.cancel_scroll_animation()
+        self.show_transient_scrollbar()
         steps = int(-1 * (event.delta / 120))
         if steps:
             self.kana_sync_mode = "scroll"
@@ -3382,10 +3651,22 @@ class VocabGrid(tk.Frame):
 
     def on_scrollbar(self, *args):
         self.cancel_scroll_animation()
+        self.show_transient_scrollbar()
         self.kana_sync_mode = "scroll"
         self.body.yview(*args)
         self.draw_body()
         self.sync_active_kana()
+
+    def show_transient_scrollbar(self):
+        self.scrollbar.place(relx=1.0, rely=0, relheight=1.0, anchor="ne")
+        self.scrollbar.lift()
+        if self.scrollbar_hide_job is not None:
+            self.after_cancel(self.scrollbar_hide_job)
+        self.scrollbar_hide_job = self.after(1200, self.hide_transient_scrollbar)
+
+    def hide_transient_scrollbar(self):
+        self.scrollbar_hide_job = None
+        self.scrollbar.place_forget()
 
     def see(self, index, animated=False):
         if not self.rows:
@@ -3466,6 +3747,7 @@ class VocabGrid(tk.Frame):
         self.smooth_scroll_to(self.current_scroll_top() + (direction * step))
 
     def animate_scroll(self, start_top, target_top, start_time, duration):
+        self.show_transient_scrollbar()
         content_height = max(1, self.content_height())
         amount = ease_out_cubic((time.perf_counter() - start_time) / duration)
         top = start_top + (target_top - start_top) * amount
@@ -3482,7 +3764,7 @@ class VocabGrid(tk.Frame):
         self.scroll_animation_job = self.after(17, lambda: self.animate_scroll(start_top, target_top, start_time, duration))
 
     def visible_kana(self):
-        if not self.items:
+        if not self.group_by_kana or not self.items:
             return None
         focus_y = self.body.canvasy(0) + min(140, max(24, self.body.winfo_height() * 0.18))
         item_index = min(len(self.items) - 1, max(0, bisect.bisect_right(self.item_tops, focus_y) - 1))
@@ -3495,13 +3777,15 @@ class VocabGrid(tk.Frame):
         return None
 
     def selected_kana(self):
-        if self.selected_index is None:
+        if not self.group_by_kana or self.selected_index is None:
             return None
         if 0 <= self.selected_index < len(self.rows):
             return normalized_first_kana(self.rows[self.selected_index]["furigana"])
         return None
 
     def sync_active_kana(self):
+        if not self.group_by_kana:
+            return
         kana = self.selected_kana() if self.kana_sync_mode == "selection" else None
         kana = kana or self.visible_kana()
         if kana and kana != self.synced_kana:

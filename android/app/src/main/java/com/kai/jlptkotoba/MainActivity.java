@@ -55,6 +55,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -114,15 +115,26 @@ public final class MainActivity extends Activity {
     private int systemGestureInsetLeft;
     private int systemGestureInsetRight;
     private VelocityTracker drawerVelocityTracker;
+    private View settingsScrim;
+    private LinearLayout settingsDrawer;
+    private Button settingsEditButton;
+    private boolean settingsOpen;
+    private boolean settingsGestureTracking;
+    private boolean settingsGestureDragging;
+    private boolean settingsGestureStartedOpen;
+    private float settingsGestureStartX;
+    private float settingsGestureStartY;
     private final Map<String, LinearLayout> drawerGroupChildren = new HashMap<>();
     private final Map<String, ImageView> drawerGroupChevrons = new HashMap<>();
     private final Map<String, Button> drawerKanaButtons = new HashMap<>();
     private final Set<String> expandedKanaGroups = new HashSet<>();
     private String activeKana;
+    private Word selectedVocabularyWord;
     private TextView vocabularyCount;
     private LinearLayout vocabularyControls;
     private ListView vocabularyList;
     private WordAdapter wordAdapter;
+    private StudyListAdapter studyAdapter;
     private boolean vocabularyControlsHidden;
     private int vocabularyControlsHeight;
     private int vocabularyScrollPreviousFirst = -1;
@@ -158,8 +170,15 @@ public final class MainActivity extends Activity {
         if (!isLevel(currentLevel)) {
             currentLevel = "N5";
         }
-        if (!"flashcards".equals(currentMode)) {
+        if (!"vocabulary".equals(currentMode)
+                && !"flashcards".equals(currentMode)
+                && !"grammar".equals(currentMode)
+                && !"kanji".equals(currentMode)) {
             currentMode = "vocabulary";
+        }
+        if ("N1".equals(currentLevel)
+                && ("vocabulary".equals(currentMode) || "flashcards".equals(currentMode))) {
+            currentLevel = "N2";
         }
 
         try {
@@ -172,6 +191,12 @@ public final class MainActivity extends Activity {
     }
 
     private void buildInterface() {
+        drawerOpen = false;
+        settingsOpen = false;
+        drawerGestureTracking = false;
+        drawerGestureDragging = false;
+        settingsGestureTracking = false;
+        settingsGestureDragging = false;
         applyPalette();
 
         root = new FrameLayout(this);
@@ -216,11 +241,14 @@ public final class MainActivity extends Activity {
 
         if ("flashcards".equals(currentMode)) {
             renderFlashcards();
+        } else if ("grammar".equals(currentMode) || "kanji".equals(currentMode)) {
+            renderReferenceList(currentMode);
         } else {
             renderVocabulary();
         }
 
         buildDrawerLayer();
+        buildSettingsLayer();
         installSystemBarInsets();
     }
 
@@ -242,14 +270,11 @@ public final class MainActivity extends Activity {
         titleParams.setMargins(dp(10), 0, dp(6), 0);
         toolbar.addView(title, titleParams);
 
-        Button theme = button(darkMode ? "Light" : "Dark", false, false);
-        theme.setOnClickListener(view -> {
-            darkMode = !darkMode;
-            preferences.edit().putBoolean(PREF_DARK_MODE, darkMode).apply();
-            buildInterface();
-        });
-        LinearLayout.LayoutParams themeParams = new LinearLayout.LayoutParams(dp(72), dp(44));
-        toolbar.addView(theme, themeParams);
+        Button settings = button("⚙", false, false);
+        settings.setTextSize(20);
+        settings.setContentDescription("Open settings");
+        settings.setOnClickListener(view -> openSettings());
+        toolbar.addView(settings, new LinearLayout.LayoutParams(dp(52), dp(44)));
         return toolbar;
     }
 
@@ -322,6 +347,21 @@ public final class MainActivity extends Activity {
         modes.addView(flashcards, weightedButtonParams(dp(4), 0));
         menuContent.addView(modes);
 
+        LinearLayout referenceModes = new LinearLayout(this);
+        referenceModes.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams referenceParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        referenceParams.setMargins(0, dp(8), 0, 0);
+        Button grammar = button("Grammar", "grammar".equals(currentMode), false);
+        grammar.setOnClickListener(view -> closeDrawer(() -> selectMode("grammar")));
+        referenceModes.addView(grammar, weightedButtonParams(0, dp(4)));
+        Button kanji = button("Kanji", "kanji".equals(currentMode), false);
+        kanji.setOnClickListener(view -> closeDrawer(() -> selectMode("kanji")));
+        referenceModes.addView(kanji, weightedButtonParams(dp(4), 0));
+        menuContent.addView(referenceModes, referenceParams);
+
         LinearLayout levels = new LinearLayout(this);
         levels.setOrientation(LinearLayout.HORIZONTAL);
         LinearLayout.LayoutParams levelsParams = new LinearLayout.LayoutParams(
@@ -332,16 +372,22 @@ public final class MainActivity extends Activity {
         menuContent.addView(levels, levelsParams);
         for (String level : LEVELS) {
             Button item = button(level, level.equals(currentLevel), false);
+            boolean levelAvailable = !"N1".equals(level)
+                    || "grammar".equals(currentMode)
+                    || "kanji".equals(currentMode);
+            item.setEnabled(levelAvailable);
+            item.setAlpha(levelAvailable ? 1f : 0.42f);
             item.setOnClickListener(view -> closeDrawer(() -> selectLevel(level)));
             LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, dp(44), 1);
             params.setMargins(dp(2), 0, dp(2), 0);
             levels.addView(item, params);
         }
 
-        menuContent.addView(drawerSectionLabel("BROWSE BY KANA"));
+        if ("vocabulary".equals(currentMode)) {
+            menuContent.addView(drawerSectionLabel("BROWSE BY KANA"));
 
-        Set<String> available = availableKana();
-        for (String[] kanaRow : KANA_ROWS) {
+            Set<String> available = availableKana();
+            for (String[] kanaRow : KANA_ROWS) {
             String groupKana = kanaRow[0];
             boolean rowAvailable = false;
             for (String kana : kanaRow) {
@@ -398,10 +444,165 @@ public final class MainActivity extends Activity {
                     toggleKanaGroup(groupKana, chevron, children);
                 }
             });
+            }
         }
 
         drawer.setTranslationX(-drawerWidth);
         drawer.setVisibility(View.INVISIBLE);
+    }
+
+    private void buildSettingsLayer() {
+        settingsScrim = new View(this);
+        settingsScrim.setBackgroundColor(Color.argb(150, 0, 0, 0));
+        settingsScrim.setAlpha(0f);
+        settingsScrim.setVisibility(View.GONE);
+        settingsScrim.setOnClickListener(view -> closeSettings(null));
+        root.addView(settingsScrim, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+        ));
+
+        settingsDrawer = new LinearLayout(this);
+        settingsDrawer.setOrientation(LinearLayout.VERTICAL);
+        settingsDrawer.setBackgroundColor(panel);
+        settingsDrawer.setElevation(dp(14));
+        int width = Math.min(dp(340), Math.round(getResources().getDisplayMetrics().widthPixels * 0.86f));
+        root.addView(settingsDrawer, new FrameLayout.LayoutParams(
+                width,
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                Gravity.END
+        ));
+
+        LinearLayout header = new LinearLayout(this);
+        header.setOrientation(LinearLayout.HORIZONTAL);
+        header.setGravity(Gravity.CENTER_VERTICAL);
+        header.setPadding(dp(18), dp(12), dp(12), dp(8));
+        header.addView(label("Settings", 21, ink, Typeface.BOLD), new LinearLayout.LayoutParams(0, dp(48), 1));
+        Button close = button("×", false, false);
+        close.setTextSize(23);
+        close.setContentDescription("Close settings");
+        close.setOnClickListener(view -> closeSettings(null));
+        header.addView(close, new LinearLayout.LayoutParams(dp(46), dp(44)));
+        settingsDrawer.addView(header);
+
+        ScrollView scroll = new ScrollView(this);
+        LinearLayout body = new LinearLayout(this);
+        body.setOrientation(LinearLayout.VERTICAL);
+        body.setPadding(dp(16), dp(4), dp(16), dp(24));
+        body.addView(drawerSectionLabel("APPEARANCE"));
+        Button theme = button(darkMode ? "Use light theme" : "Use dark theme", false, false);
+        theme.setOnClickListener(view -> {
+            darkMode = !darkMode;
+            preferences.edit().putBoolean(PREF_DARK_MODE, darkMode).apply();
+            buildInterface();
+        });
+        body.addView(theme, drawerItemParams(0));
+
+        body.addView(drawerSectionLabel("VOCABULARY"));
+        settingsEditButton = button("Edit selected word", false, false);
+        settingsEditButton.setOnClickListener(view -> closeSettings(() -> openVocabularyEditor(selectedVocabularyWord)));
+        body.addView(settingsEditButton, drawerItemParams(0));
+        boolean vocabularyMode = "vocabulary".equals(currentMode);
+        Button importCsv = button("Import CSV", false, false);
+        importCsv.setEnabled(vocabularyMode);
+        importCsv.setAlpha(vocabularyMode ? 1f : 0.42f);
+        importCsv.setOnClickListener(view -> closeSettings(this::openCsvPicker));
+        body.addView(importCsv, drawerItemParams(dp(8)));
+
+        TextView source = label("Study lists: JLPT Sensei\nAvailable offline after installation.", 12, muted, Typeface.NORMAL);
+        source.setPadding(dp(4), dp(24), dp(4), 0);
+        body.addView(source);
+        scroll.addView(body, new ScrollView.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        ));
+        settingsDrawer.addView(scroll, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                0,
+                1
+        ));
+        settingsDrawer.setTranslationX(width);
+        settingsDrawer.setVisibility(View.INVISIBLE);
+        updateSettingsActions();
+    }
+
+    private void updateSettingsActions() {
+        if (settingsEditButton == null) {
+            return;
+        }
+        boolean canEdit = "vocabulary".equals(currentMode) && selectedVocabularyWord != null;
+        settingsEditButton.setEnabled(canEdit);
+        settingsEditButton.setAlpha(canEdit ? 1f : 0.42f);
+    }
+
+    private void showSettingsLayer() {
+        settingsDrawer.animate().cancel();
+        settingsScrim.animate().cancel();
+        settingsScrim.setVisibility(View.VISIBLE);
+        settingsDrawer.setVisibility(View.VISIBLE);
+        settingsScrim.bringToFront();
+        settingsDrawer.bringToFront();
+    }
+
+    private void setSettingsTranslation(float translation) {
+        float width = Math.max(1f, settingsDrawer.getWidth());
+        float clamped = Math.max(0f, Math.min(width, translation));
+        settingsDrawer.setTranslationX(clamped);
+        settingsScrim.setAlpha(1f - clamped / width);
+    }
+
+    private void openSettings() {
+        if (settingsOpen || settingsDrawer == null) {
+            return;
+        }
+        hideKeyboard();
+        updateSettingsActions();
+        showSettingsLayer();
+        animateSettingsTo(true, null);
+    }
+
+    private void animateSettingsTo(boolean open, Runnable afterAnimation) {
+        showSettingsLayer();
+        float width = Math.max(1f, settingsDrawer.getWidth());
+        float target = open ? 0f : width;
+        float distanceFraction = Math.abs(target - settingsDrawer.getTranslationX()) / width;
+        long duration = Math.max(120L, Math.round(260f * distanceFraction));
+        settingsOpen = open;
+        settingsScrim.animate()
+                .alpha(open ? 1f : 0f)
+                .setDuration(duration)
+                .setInterpolator(new DecelerateInterpolator())
+                .start();
+        settingsDrawer.animate()
+                .translationX(target)
+                .setDuration(duration)
+                .setInterpolator(new DecelerateInterpolator())
+                .withEndAction(() -> {
+                    if (!open) {
+                        settingsDrawer.setVisibility(View.INVISIBLE);
+                        settingsScrim.setVisibility(View.GONE);
+                    }
+                    if (afterAnimation != null) {
+                        afterAnimation.run();
+                    }
+                })
+                .start();
+    }
+
+    private void closeSettings(Runnable afterClose) {
+        if (settingsDrawer == null) {
+            if (afterClose != null) {
+                afterClose.run();
+            }
+            return;
+        }
+        if (!settingsOpen && settingsDrawer.getVisibility() != View.VISIBLE) {
+            if (afterClose != null) {
+                afterClose.run();
+            }
+            return;
+        }
+        animateSettingsTo(false, afterClose);
     }
 
     private TextView drawerSectionLabel(String text) {
@@ -634,6 +835,7 @@ public final class MainActivity extends Activity {
             topChrome.setPadding(0, topInset, 0, 0);
             mainColumn.setPadding(0, 0, 0, bottomInset);
             drawer.setPadding(0, topInset, 0, bottomInset);
+            settingsDrawer.setPadding(0, topInset, 0, bottomInset);
             return insets;
         });
         root.requestApplyInsets();
@@ -644,7 +846,9 @@ public final class MainActivity extends Activity {
             getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
                     OnBackInvokedDispatcher.PRIORITY_DEFAULT,
                     () -> {
-                        if (drawerOpen) {
+                        if (settingsOpen) {
+                            closeSettings(null);
+                        } else if (drawerOpen) {
                             closeDrawer(null);
                         } else {
                             finishAfterTransition();
@@ -667,17 +871,21 @@ public final class MainActivity extends Activity {
             drawerGestureStartY = event.getY();
             drawerGestureStartedOpen = drawerOpen;
             drawerGestureDragging = false;
+            settingsGestureStartX = event.getX();
+            settingsGestureStartY = event.getY();
+            settingsGestureStartedOpen = settingsOpen;
+            settingsGestureDragging = false;
 
-            boolean insideOpenDrawer = drawerOpen
-                    && drawer != null
-                    && drawerGestureStartX <= drawer.getWidth();
+            boolean insideOpenDrawer = drawerOpen && drawer != null;
             int safeLeft = Math.max(dp(32), systemGestureInsetLeft + dp(8));
             int safeRight = Math.max(dp(32), systemGestureInsetRight + dp(8));
-            boolean insideGestureSafeContent = !drawerOpen
+            boolean insideGestureSafeContent = !drawerOpen && !settingsOpen
                     && root != null
                     && drawerGestureStartX >= safeLeft
                     && drawerGestureStartX <= root.getWidth() - safeRight;
             drawerGestureTracking = insideOpenDrawer || insideGestureSafeContent;
+            boolean insideOpenSettings = settingsOpen && settingsDrawer != null;
+            settingsGestureTracking = insideOpenSettings || insideGestureSafeContent;
         } else if (drawerVelocityTracker != null) {
             drawerVelocityTracker.addMovement(event);
         }
@@ -743,8 +951,72 @@ public final class MainActivity extends Activity {
                 animateDrawerTo(open, null);
                 return true;
             }
+        }
+
+        if (action == MotionEvent.ACTION_MOVE && settingsGestureTracking) {
+            float deltaX = event.getX() - settingsGestureStartX;
+            float deltaY = event.getY() - settingsGestureStartY;
+            float horizontalDistance = Math.abs(deltaX);
+            float verticalDistance = Math.abs(deltaY);
+            int touchSlop = ViewConfiguration.get(this).getScaledTouchSlop();
+
+            if (!settingsGestureDragging) {
+                if (verticalDistance > touchSlop && verticalDistance > horizontalDistance) {
+                    settingsGestureTracking = false;
+                } else if (horizontalDistance > touchSlop) {
+                    boolean correctDirection = settingsGestureStartedOpen ? deltaX > 0 : deltaX < 0;
+                    if (!correctDirection) {
+                        settingsGestureTracking = false;
+                    } else {
+                        settingsGestureDragging = true;
+                        hideKeyboard();
+                        showSettingsLayer();
+                        MotionEvent cancel = MotionEvent.obtain(event);
+                        cancel.setAction(MotionEvent.ACTION_CANCEL);
+                        super.dispatchTouchEvent(cancel);
+                        cancel.recycle();
+                    }
+                }
+            }
+
+            if (settingsGestureDragging) {
+                float width = Math.max(1f, settingsDrawer.getWidth());
+                float startTranslation = settingsGestureStartedOpen ? 0f : width;
+                setSettingsTranslation(startTranslation + deltaX);
+                return true;
+            }
+        }
+
+        if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+            if (settingsGestureDragging) {
+                boolean open;
+                if (action == MotionEvent.ACTION_CANCEL) {
+                    open = settingsGestureStartedOpen;
+                } else {
+                    drawerVelocityTracker.computeCurrentVelocity(1000);
+                    float velocityX = drawerVelocityTracker.getXVelocity();
+                    float minimumFling = Math.max(
+                            ViewConfiguration.get(this).getScaledMinimumFlingVelocity(),
+                            dp(450)
+                    );
+                    float width = Math.max(1f, settingsDrawer.getWidth());
+                    float openFraction = 1f - settingsDrawer.getTranslationX() / width;
+                    open = Math.abs(velocityX) >= minimumFling
+                            ? velocityX < 0
+                            : openFraction >= 0.5f;
+                }
+                drawerGestureTracking = false;
+                drawerGestureDragging = false;
+                settingsGestureTracking = false;
+                settingsGestureDragging = false;
+                recycleDrawerVelocityTracker();
+                animateSettingsTo(open, null);
+                return true;
+            }
             drawerGestureTracking = false;
             drawerGestureDragging = false;
+            settingsGestureTracking = false;
+            settingsGestureDragging = false;
             recycleDrawerVelocityTracker();
         }
         return super.dispatchTouchEvent(event);
@@ -761,7 +1033,9 @@ public final class MainActivity extends Activity {
     @SuppressWarnings("deprecation")
     @Override
     public void onBackPressed() {
-        if (drawerOpen) {
+        if (settingsOpen) {
+            closeSettings(null);
+        } else if (drawerOpen) {
             closeDrawer(null);
         } else {
             super.onBackPressed();
@@ -774,17 +1048,30 @@ public final class MainActivity extends Activity {
         }
         hideKeyboard();
         currentMode = mode;
+        searchQuery = "";
+        selectedVocabularyWord = null;
+        if ("N1".equals(currentLevel)
+                && ("vocabulary".equals(mode) || "flashcards".equals(mode))) {
+            currentLevel = "N2";
+            preferences.edit().putString(PREF_LEVEL, currentLevel).apply();
+        }
         preferences.edit().putString(PREF_MODE, currentMode).apply();
         buildInterface();
     }
 
     private void selectLevel(String level) {
+        if ("N1".equals(level)
+                && ("vocabulary".equals(currentMode) || "flashcards".equals(currentMode))) {
+            return;
+        }
         if (level.equals(currentLevel)) {
             return;
         }
         hideKeyboard();
         currentLevel = level;
         activeKana = null;
+        searchQuery = "";
+        selectedVocabularyWord = null;
         loadedFlashLevel = null;
         preferences.edit().putString(PREF_LEVEL, currentLevel).apply();
         buildInterface();
@@ -974,6 +1261,17 @@ public final class MainActivity extends Activity {
         return Integer.MAX_VALUE;
     }
 
+    private void configureTransientScrollbar(ListView list) {
+        list.setVerticalScrollBarEnabled(true);
+        list.setScrollBarStyle(View.SCROLLBARS_INSIDE_OVERLAY);
+        list.setScrollbarFadingEnabled(true);
+        list.setScrollBarFadeDuration(320);
+        list.setScrollBarDefaultDelayBeforeFade(700);
+        list.setSmoothScrollbarEnabled(true);
+        list.setFastScrollEnabled(true);
+        list.setFastScrollAlwaysVisible(false);
+    }
+
     private void renderVocabulary() {
         if (vocabularyControls != null) {
             vocabularyControls.animate().cancel();
@@ -1017,19 +1315,13 @@ public final class MainActivity extends Activity {
                 Typeface.NORMAL
         ));
         heading.addView(headingText, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-
-        Button importButton = button("Import CSV", false, false);
-        importButton.setOnClickListener(view -> openCsvPicker());
-        LinearLayout.LayoutParams importParams = new LinearLayout.LayoutParams(dp(112), dp(44));
-        importParams.setMargins(dp(8), 0, 0, 0);
-        heading.addView(importButton, importParams);
         vocabularyControls.addView(heading);
 
         EditText search = new EditText(this);
         search.setSingleLine(true);
         search.setText(searchQuery);
         search.setSelection(search.getText().length());
-        search.setHint("Search kanji, kana, romaji, or meaning");
+        search.setHint("Search word, reading, romaji, type, or meaning");
         search.setHintTextColor(muted);
         search.setTextColor(ink);
         search.setTextSize(15);
@@ -1060,8 +1352,9 @@ public final class MainActivity extends Activity {
         vocabularyList = new ListView(this);
         vocabularyList.setDivider(new ColorDrawable(line));
         vocabularyList.setDividerHeight(1);
-        vocabularyList.setBackground(roundedBackground(panel, line, 12));
-        vocabularyList.setClipToOutline(true);
+        vocabularyList.setBackgroundColor(paper);
+        vocabularyList.setClipToOutline(false);
+        configureTransientScrollbar(vocabularyList);
         vocabularyViewport.addView(vocabularyList, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
@@ -1126,6 +1419,14 @@ public final class MainActivity extends Activity {
                     })
                     .show();
             return true;
+        });
+        vocabularyList.setOnItemClickListener((parent, view, position, id) -> {
+            Word selected = wordAdapter.getItem(position);
+            if (selected != null) {
+                selectedVocabularyWord = selected;
+                updateSettingsActions();
+                Toast.makeText(this, "Selected for editing: " + displayWord(selected), Toast.LENGTH_SHORT).show();
+            }
         });
 
         vocabularyList.setOnScrollListener(new AbsListView.OnScrollListener() {
@@ -1286,9 +1587,7 @@ public final class MainActivity extends Activity {
             vocabularyControlsLastDirection = 0;
             return;
         }
-        boolean hide = vocabularyControlsLastDirection > 0
-                || (vocabularyControlsLastDirection == 0
-                && currentOffset >= vocabularyControlsHeight / 2f);
+        boolean hide = currentOffset >= vocabularyControlsHeight / 2f;
         if (vocabularyList != null && vocabularyList.getFirstVisiblePosition() == 0) {
             int coupledDistance = hide
                     ? Math.round(vocabularyControlsHeight - currentOffset)
@@ -1334,6 +1633,148 @@ public final class MainActivity extends Activity {
                 : filtered.size() + " words");
     }
 
+    private void renderReferenceList(String section) {
+        if (vocabularyControls != null) {
+            vocabularyControls.animate().cancel();
+        }
+        vocabularyControlsHidden = false;
+        vocabularyControlsHeight = 0;
+        vocabularyScrollPreviousFirst = -1;
+        vocabularyScrollPreviousTop = 0;
+        vocabularyVisibleItemTops.clear();
+        vocabularyControlsLastDirection = 0;
+        vocabularyKanaScrollRunning = false;
+        wordAdapter = null;
+
+        List<StudyRow> allRows = repository.studyRows(section, currentLevel);
+        vocabularyControls = new LinearLayout(this);
+        vocabularyControls.setOrientation(LinearLayout.VERTICAL);
+        vocabularyControls.setClipChildren(true);
+        vocabularyControls.setBackgroundColor(paper);
+        vocabularyControls.setElevation(dp(2));
+
+        String title = "grammar".equals(section) ? "Grammar" : "Kanji";
+        LinearLayout heading = new LinearLayout(this);
+        heading.setOrientation(LinearLayout.VERTICAL);
+        heading.addView(label("JLPT " + currentLevel + " " + title, 25, ink, Typeface.BOLD));
+        heading.addView(label("Search or browse the complete " + title.toLowerCase(Locale.ROOT) + " list.", 14, muted, Typeface.NORMAL));
+        vocabularyControls.addView(heading);
+
+        EditText search = new EditText(this);
+        search.setSingleLine(true);
+        search.setText(searchQuery);
+        search.setSelection(search.getText().length());
+        search.setHint("grammar".equals(section)
+                ? "Search grammar, romaji, or meaning"
+                : "Search kanji, readings, or meaning");
+        search.setHintTextColor(muted);
+        search.setTextColor(ink);
+        search.setTextSize(15);
+        search.setPadding(dp(15), 0, dp(15), 0);
+        search.setBackground(roundedBackground(panel, line, 10));
+        LinearLayout.LayoutParams searchParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                dp(52)
+        );
+        searchParams.setMargins(0, dp(14), 0, dp(8));
+        vocabularyControls.addView(search, searchParams);
+
+        vocabularyCount = label("", 13, muted, Typeface.BOLD);
+        LinearLayout.LayoutParams countParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        countParams.setMargins(dp(2), 0, 0, dp(7));
+        vocabularyControls.addView(vocabularyCount, countParams);
+
+        FrameLayout viewport = new FrameLayout(this);
+        content.addView(viewport, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                0,
+                1
+        ));
+        vocabularyList = new ListView(this);
+        vocabularyList.setDivider(new ColorDrawable(line));
+        vocabularyList.setDividerHeight(1);
+        vocabularyList.setBackgroundColor(paper);
+        configureTransientScrollbar(vocabularyList);
+        viewport.addView(vocabularyList, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+        ));
+        viewport.addView(vocabularyControls, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.TOP
+        ));
+
+        updateReferenceFilter(section, allRows, searchQuery);
+        LinearLayout measuredControls = vocabularyControls;
+        ListView measuredList = vocabularyList;
+        measuredControls.post(() -> {
+            if (measuredControls != vocabularyControls || measuredList != vocabularyList) {
+                return;
+            }
+            int measuredHeight = measuredControls.getHeight();
+            if (measuredHeight > 0 && measuredHeight != vocabularyControlsHeight) {
+                vocabularyControlsHeight = measuredHeight;
+                vocabularyScrollPreviousFirst = -1;
+                vocabularyVisibleItemTops.clear();
+                if (studyAdapter != null) {
+                    studyAdapter.notifyDataSetChanged();
+                    measuredList.setSelection(0);
+                }
+            }
+        });
+        search.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence value, int start, int count, int after) { }
+            @Override public void afterTextChanged(Editable value) { }
+
+            @Override
+            public void onTextChanged(CharSequence value, int start, int before, int count) {
+                searchQuery = value.toString();
+                updateReferenceFilter(section, allRows, searchQuery);
+            }
+        });
+
+        vocabularyList.setOnScrollListener(new AbsListView.OnScrollListener() {
+            @Override
+            public void onScrollStateChanged(AbsListView view, int scrollState) {
+                if (scrollState == AbsListView.OnScrollListener.SCROLL_STATE_TOUCH_SCROLL) {
+                    vocabularyControlsLastDirection = 0;
+                    if (vocabularyControls != null) {
+                        vocabularyControls.animate().cancel();
+                    }
+                } else if (scrollState == AbsListView.OnScrollListener.SCROLL_STATE_IDLE) {
+                    settleVocabularyControls();
+                }
+            }
+
+            @Override
+            public void onScroll(AbsListView view, int firstVisibleItem, int visibleItemCount, int totalItemCount) {
+                if (totalItemCount > 0) {
+                    updateVocabularyControlsForScroll(view, firstVisibleItem);
+                }
+            }
+        });
+    }
+
+    private void updateReferenceFilter(String section, List<StudyRow> allRows, String query) {
+        List<StudyRow> filtered = new ArrayList<>();
+        for (StudyRow row : allRows) {
+            if (row.matches(query)) {
+                filtered.add(row);
+            }
+        }
+        studyAdapter = new StudyListAdapter(section, filtered);
+        vocabularyVisibleItemTops.clear();
+        vocabularyScrollPreviousFirst = -1;
+        vocabularyList.setAdapter(studyAdapter);
+        showVocabularyControlsImmediately();
+        String unit = "grammar".equals(section) ? " grammar points" : " kanji";
+        vocabularyCount.setText(String.format(Locale.ROOT, "%d%s", filtered.size(), unit));
+    }
+
     private void renderFlashcards() {
         ensureFlashState();
         List<Word> available = repository.words(currentLevel);
@@ -1371,12 +1812,44 @@ public final class MainActivity extends Activity {
         barParams.setMargins(0, 0, 0, dp(10));
         content.addView(progressBar, barParams);
 
-        LinearLayout card = new LinearLayout(this);
+        FlashCardLayout card = new FlashCardLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
         card.setGravity(Gravity.CENTER);
         card.setPadding(dp(24), dp(26), dp(24), dp(26));
         card.setBackground(roundedBackground(panel, line, 18));
         card.setOnClickListener(view -> handleCardTap(available));
+        final float[] cardTouchStart = new float[2];
+        card.setOnTouchListener((view, event) -> {
+            int action = event.getActionMasked();
+            if (action == MotionEvent.ACTION_DOWN) {
+                cardTouchStart[0] = event.getX();
+                cardTouchStart[1] = event.getY();
+                return true;
+            }
+            if (action != MotionEvent.ACTION_UP) {
+                return true;
+            }
+            float movement = Math.max(
+                    Math.abs(event.getX() - cardTouchStart[0]),
+                    Math.abs(event.getY() - cardTouchStart[1])
+            );
+            if (movement > ViewConfiguration.get(this).getScaledTouchSlop()) {
+                return true;
+            }
+            float fraction = event.getX() / Math.max(1f, view.getWidth());
+            if (fraction < 0.34f) {
+                previousCard();
+            } else if (fraction > 0.66f) {
+                if (flashDeck.isEmpty()) {
+                    startDeck(available);
+                } else {
+                    nextCard();
+                }
+            } else {
+                view.performClick();
+            }
+            return true;
+        });
         content.addView(card, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 0,
@@ -1549,12 +2022,28 @@ public final class MainActivity extends Activity {
     }
 
     private void confirmRestart(List<Word> available) {
-        new AlertDialog.Builder(this)
-                .setTitle("Restart this deck?")
-                .setMessage("Your saved position for JLPT " + currentLevel + " will be replaced.")
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setCustomTitle(dialogTitle("Restart this deck?"))
+                .setMessage("Return to the ready screen for JLPT " + currentLevel + "? Your saved position will be cleared.")
                 .setNegativeButton("Cancel", null)
-                .setPositiveButton("Restart", (dialog, which) -> startDeck(available))
-                .show();
+                .setPositiveButton("Restart", (ignored, which) -> resetFlashDeckToReady())
+                .create();
+        showStyledDialog(dialog);
+    }
+
+    private void resetFlashDeckToReady() {
+        preferences.edit()
+                .remove("flash_deck_" + currentLevel)
+                .remove("flash_index_" + currentLevel)
+                .remove("flash_revealed_" + currentLevel)
+                .remove("flash_complete_" + currentLevel)
+                .apply();
+        flashDeck = new ArrayList<>();
+        flashIndex = -1;
+        flashAnswerVisible = false;
+        flashComplete = false;
+        loadedFlashLevel = currentLevel;
+        renderCurrentScreen();
     }
 
     private void ensureFlashState() {
@@ -1627,6 +2116,8 @@ public final class MainActivity extends Activity {
         content.removeAllViews();
         if ("flashcards".equals(currentMode)) {
             renderFlashcards();
+        } else if ("grammar".equals(currentMode) || "kanji".equals(currentMode)) {
+            renderReferenceList(currentMode);
         } else {
             renderVocabulary();
         }
@@ -1637,6 +2128,114 @@ public final class MainActivity extends Activity {
         intent.addCategory(Intent.CATEGORY_OPENABLE);
         intent.setType("text/*");
         startActivityForResult(intent, IMPORT_CSV_REQUEST);
+    }
+
+    private void openVocabularyEditor(Word target) {
+        if (target == null) {
+            Toast.makeText(this, "Tap a vocabulary row first, then choose Edit.", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        LinearLayout form = new LinearLayout(this);
+        form.setOrientation(LinearLayout.VERTICAL);
+        form.setPadding(dp(22), dp(6), dp(22), dp(8));
+        EditText word = editorField("Word", target.kanji);
+        EditText reading = editorField("Reading", target.furigana);
+        EditText romaji = editorField("Romaji", target.romaji);
+        EditText type = editorField("Type", target.type);
+        EditText meaning = editorField("Meaning", target.meaning);
+        meaning.setSingleLine(false);
+        meaning.setMinLines(2);
+        for (EditText field : new EditText[]{word, reading, romaji, type, meaning}) {
+            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    field == meaning ? dp(76) : dp(52)
+            );
+            params.setMargins(0, dp(7), 0, dp(7));
+            form.addView(field, params);
+        }
+
+        ScrollView scroll = new ScrollView(this);
+        scroll.addView(form);
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setCustomTitle(dialogTitle("Edit vocabulary"))
+                .setView(scroll)
+                .setNegativeButton("Cancel", null)
+                .setPositiveButton("Save", null)
+                .create();
+        dialog.setOnShowListener(ignored -> {
+            styleDialog(dialog);
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
+                String wordValue = word.getText().toString().trim();
+                String readingValue = reading.getText().toString().trim();
+                String romajiValue = romaji.getText().toString().trim();
+                String typeValue = type.getText().toString().trim();
+                String meaningValue = meaning.getText().toString().trim();
+                if (wordValue.isEmpty() || readingValue.isEmpty() || meaningValue.isEmpty()) {
+                    Toast.makeText(this, "Word, reading, and meaning are required.", Toast.LENGTH_SHORT).show();
+                    return;
+                }
+                Word replacement = new Word(
+                        wordValue,
+                        readingValue,
+                        romajiValue,
+                        typeValue,
+                        meaningValue,
+                        true
+                );
+                repository.replaceWord(currentLevel, target, replacement);
+                selectedVocabularyWord = replacement;
+                loadedFlashLevel = null;
+                searchQuery = "";
+                dialog.dismiss();
+                renderCurrentScreen();
+                Toast.makeText(this, "Vocabulary updated.", Toast.LENGTH_SHORT).show();
+            });
+        });
+        dialog.show();
+    }
+
+    private EditText editorField(String hint, String value) {
+        EditText field = new EditText(this);
+        field.setHint(hint);
+        field.setText(value);
+        field.setHintTextColor(muted);
+        field.setTextColor(ink);
+        field.setTextSize(15);
+        field.setPadding(dp(14), 0, dp(14), 0);
+        field.setBackground(roundedBackground(panel, line, 10));
+        field.setSingleLine(true);
+        return field;
+    }
+
+    private void showStyledDialog(AlertDialog dialog) {
+        dialog.setOnShowListener(ignored -> styleDialog(dialog));
+        dialog.show();
+    }
+
+    private void styleDialog(AlertDialog dialog) {
+        Window window = dialog.getWindow();
+        if (window != null) {
+            window.setBackgroundDrawable(roundedBackground(panel, line, 14));
+        }
+        Button positive = dialog.getButton(AlertDialog.BUTTON_POSITIVE);
+        Button negative = dialog.getButton(AlertDialog.BUTTON_NEGATIVE);
+        if (positive != null) {
+            positive.setTextColor(accent);
+        }
+        if (negative != null) {
+            negative.setTextColor(muted);
+        }
+        TextView message = dialog.findViewById(android.R.id.message);
+        if (message != null) {
+            message.setTextColor(muted);
+        }
+    }
+
+    private TextView dialogTitle(String text) {
+        TextView title = label(text, 20, ink, Typeface.BOLD);
+        title.setPadding(dp(24), dp(20), dp(24), dp(8));
+        return title;
     }
 
     @Override
@@ -1810,6 +2409,18 @@ public final class MainActivity extends Activity {
     private static final int VOCAB_SECTION = 1;
     private static final int VOCAB_WORD = 2;
 
+    private static final class FlashCardLayout extends LinearLayout {
+        FlashCardLayout(Context context) {
+            super(context);
+        }
+
+        @Override
+        public boolean performClick() {
+            super.performClick();
+            return true;
+        }
+    }
+
     private final class VocabularyItem {
         final int kind;
         final Word word;
@@ -1962,10 +2573,11 @@ public final class MainActivity extends Activity {
             tableHeader.setGravity(Gravity.CENTER_VERTICAL);
             tableHeader.setBackgroundColor(topbar);
             tableHeader.setMinimumHeight(dp(38));
-            addTableCell(tableHeader, "Kanji", 0.85f, Color.rgb(255, 247, 237), Typeface.BOLD, 11);
-            addTableCell(tableHeader, "Furigana", 1.05f, Color.rgb(255, 247, 237), Typeface.BOLD, 11);
-            addTableCell(tableHeader, "Romaji", 0.85f, Color.rgb(255, 247, 237), Typeface.BOLD, 11);
-            addTableCell(tableHeader, "Meaning", 1.65f, Color.rgb(255, 247, 237), Typeface.BOLD, 11);
+            addTableCell(tableHeader, "Word", 0.9f, Color.rgb(255, 247, 237), Typeface.BOLD, 10);
+            addTableCell(tableHeader, "Reading", 1.0f, Color.rgb(255, 247, 237), Typeface.BOLD, 10);
+            addTableCell(tableHeader, "Romaji", 0.8f, Color.rgb(255, 247, 237), Typeface.BOLD, 10);
+            addTableCell(tableHeader, "Type", 1.25f, Color.rgb(255, 247, 237), Typeface.BOLD, 10);
+            addTableCell(tableHeader, "Meaning", 1.65f, Color.rgb(255, 247, 237), Typeface.BOLD, 10);
             section.addView(tableHeader, new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.WRAP_CONTENT
@@ -1984,14 +2596,113 @@ public final class MainActivity extends Activity {
 
             String kanji = word.kanji.isEmpty() ? "—" : word.kanji;
             int kanjiColor = word.custom ? accent : ink;
-            addTableCell(row, kanji, 0.85f, kanjiColor, Typeface.BOLD, 14);
-            addTableCell(row, word.furigana, 1.05f, ink, Typeface.NORMAL, 13);
-            addTableCell(row, word.romaji, 0.85f, muted, Typeface.NORMAL, 12);
-            addTableCell(row, word.meaning, 1.65f, ink, Typeface.NORMAL, 13);
+            addTableCell(row, kanji, 0.9f, kanjiColor, Typeface.BOLD, 13);
+            addTableCell(row, word.furigana, 1.0f, ink, Typeface.NORMAL, 12);
+            addTableCell(row, word.romaji, 0.8f, muted, Typeface.NORMAL, 11);
+            addTableCell(row, word.type, 1.25f, muted, Typeface.NORMAL, 10);
+            addTableCell(row, word.meaning, 1.65f, ink, Typeface.NORMAL, 12);
             return row;
         }
 
         private void addTableCell(
+                LinearLayout row,
+                String text,
+                float weight,
+                int color,
+                int style,
+                float size
+        ) {
+            if (row.getChildCount() > 0) {
+                View divider = new View(MainActivity.this);
+                divider.setBackgroundColor(line);
+                row.addView(divider, new LinearLayout.LayoutParams(dp(1), ViewGroup.LayoutParams.MATCH_PARENT));
+            }
+            TextView cell = label(text, size, color, style);
+            cell.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
+            cell.setPadding(dp(8), dp(8), dp(6), dp(8));
+            row.addView(cell, new LinearLayout.LayoutParams(
+                    0,
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    weight
+            ));
+        }
+    }
+
+    private final class StudyListAdapter extends BaseAdapter {
+        private static final int SPACER = 0;
+        private static final int HEADER = 1;
+        private static final int ROW = 2;
+
+        private final String section;
+        private final List<StudyRow> rows;
+        private final String[] labels;
+        private final float[] weights;
+
+        StudyListAdapter(String section, List<StudyRow> rows) {
+            this.section = section;
+            this.rows = rows;
+            if ("grammar".equals(section)) {
+                labels = new String[]{"Grammar", "Romaji", "Meaning"};
+                weights = new float[]{1.45f, 1.1f, 2.45f};
+            } else {
+                labels = new String[]{"Kanji", "On'yomi", "Kun'yomi", "Meaning"};
+                weights = new float[]{0.65f, 1.65f, 1.65f, 2.05f};
+            }
+        }
+
+        @Override public int getCount() { return rows.size() + 2; }
+        @Override public StudyRow getItem(int position) {
+            int index = position - 2;
+            return index >= 0 && index < rows.size() ? rows.get(index) : null;
+        }
+        @Override public long getItemId(int position) { return position; }
+        @Override public int getViewTypeCount() { return 3; }
+        @Override public int getItemViewType(int position) {
+            return position == 0 ? SPACER : (position == 1 ? HEADER : ROW);
+        }
+        @Override public boolean areAllItemsEnabled() { return false; }
+        @Override public boolean isEnabled(int position) { return false; }
+
+        @Override
+        public View getView(int position, View convertView, ViewGroup parent) {
+            if (position == 0) {
+                View spacer = new View(MainActivity.this);
+                spacer.setBackgroundColor(paper);
+                spacer.setLayoutParams(new AbsListView.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        Math.max(1, vocabularyControlsHeight)
+                ));
+                return spacer;
+            }
+            if (position == 1) {
+                LinearLayout header = new LinearLayout(MainActivity.this);
+                header.setOrientation(LinearLayout.HORIZONTAL);
+                header.setGravity(Gravity.CENTER_VERTICAL);
+                header.setBackgroundColor(topbar);
+                header.setMinimumHeight(dp(42));
+                for (int index = 0; index < labels.length; index++) {
+                    addStudyCell(header, labels[index], weights[index], Color.rgb(255, 247, 237), Typeface.BOLD, 10);
+                }
+                return header;
+            }
+
+            StudyRow item = getItem(position);
+            LinearLayout row = new LinearLayout(MainActivity.this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            row.setMinimumHeight(dp("grammar".equals(section) ? 66 : 62));
+            row.setBackgroundColor(position % 2 == 0
+                    ? panel
+                    : (darkMode ? Color.rgb(39, 27, 37) : Color.rgb(255, 247, 239)));
+            for (int index = 0; index < item.values.length; index++) {
+                int color = index == 0 ? (darkMode ? Color.rgb(255, 216, 200) : accent) : (index == item.values.length - 1 ? ink : muted);
+                int style = index == 0 ? Typeface.BOLD : Typeface.NORMAL;
+                addStudyCell(row, item.values[index], weights[index], color, style, index == 0 ? 13 : 11);
+            }
+            return row;
+        }
+
+        private void addStudyCell(
                 LinearLayout row,
                 String text,
                 float weight,
