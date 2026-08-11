@@ -4,6 +4,7 @@ import ctypes
 import json
 import math
 import random
+import re
 import sys
 import time
 from pathlib import Path
@@ -140,10 +141,23 @@ class JLPTStudyApp(ctk.CTk):
         self.active_level_button = None
         self.flash_rail_selected_level = None
         self.flashcards_ready = False
+        self.flash_source = "Vocabulary"
         self.flash_deck = []
         self.flash_index = -1
         self.card_answer_visible = False
         self.flash_complete = False
+        self.quiz_stage = "idle"
+        self.quiz_level = "N5"
+        self.quiz_deck = []
+        self.quiz_index = -1
+        self.quiz_mistakes = []
+        self.quiz_mistake_keys = set()
+        self.quiz_answered = False
+        self.quiz_main_correct = 0
+        self.quiz_option_buttons = []
+        self.quiz_next_button = None
+        self.quiz_feedback_label = None
+        self.quiz_shake_after_id = None
         self.completion_animation_after_id = None
         self.completion_canvas_active = False
         self.completion_canvas_ready = False
@@ -191,6 +205,7 @@ class JLPTStudyApp(ctk.CTk):
         self.settings_animation_start_x = 0.0
         self.settings_animation_started_at = None
         self.settings_animation_duration = 0.26
+        self.settings_backdrop_image = None
 
         self.search_var = ctk.StringVar()
         self.flash_level_var = ctk.StringVar(value="N5")
@@ -253,6 +268,7 @@ class JLPTStudyApp(ctk.CTk):
             command=self.open_settings,
         )
         self.settings_button.grid(row=0, column=2, sticky="e", padx=22, pady=15)
+        self.settings_button.bind("<Enter>", self.prepare_drawer_backdrop_cache, add="+")
 
         self.shell = ctk.CTkFrame(self, fg_color="transparent")
         self.shell.grid(row=1, column=0, sticky="nsew", padx=28, pady=(24, 26))
@@ -359,6 +375,7 @@ class JLPTStudyApp(ctk.CTk):
 
         self.vocab_view = ctk.CTkFrame(self.content, fg_color="transparent")
         self.flash_view = ctk.CTkFrame(self.content, fg_color="transparent")
+        self.quiz_view = ctk.CTkFrame(self.content, fg_color="transparent")
         self.vocab_view.grid_columnconfigure(0, weight=1)
         self.vocab_view.grid_columnconfigure(1, weight=0)
         self.vocab_view.grid_columnconfigure(2, weight=1)
@@ -366,6 +383,8 @@ class JLPTStudyApp(ctk.CTk):
         self.flash_view.grid_columnconfigure(0, weight=1)
         self.flash_view.grid_rowconfigure(0, weight=1)
         self.flash_view.grid_rowconfigure(1, weight=0)
+        self.quiz_view.grid_columnconfigure(0, weight=1)
+        self.quiz_view.grid_rowconfigure(0, weight=1)
 
         self.vocab_sheet = ctk.CTkFrame(self.vocab_view, fg_color="transparent", width=1320)
         self.vocab_sheet.grid(row=0, column=1, rowspan=2, sticky="ns")
@@ -441,9 +460,11 @@ class JLPTStudyApp(ctk.CTk):
         self.bind_all("<Button-1>", self.clear_vocab_selection_on_outside_click, add="+")
 
         self._build_flashcards()
+        self._build_grammar_quiz()
         self._build_drawer()
         self._build_settings_drawer()
         self.flash_view.grid(row=0, column=0, sticky="nsew")
+        self.quiz_view.grid(row=0, column=0, sticky="nsew")
         self.vocab_view.grid(row=0, column=0, sticky="nsew")
         self.vocab_view.tkraise()
         self.bind("<Configure>", self.schedule_root_layout_refresh, add="+")
@@ -506,27 +527,35 @@ class JLPTStudyApp(ctk.CTk):
 
         nav = ctk.CTkFrame(self.drawer_panel, fg_color="transparent")
         nav.grid(row=2, column=0, sticky="ew", padx=16)
-        nav.grid_columnconfigure((0, 1), weight=1)
+        nav.grid_columnconfigure((0, 1, 2), weight=1)
         self.nav_buttons = {}
-        for index, label in enumerate(STUDY_VIEWS):
+        nav_layout = {
+            "Vocabulary": (0, 0, 1, (0, 4), (0, 8)),
+            "Grammar": (0, 1, 1, (4, 4), (0, 8)),
+            "Kanji": (0, 2, 1, (4, 0), (0, 8)),
+            "Study": (1, 0, 3, 0, 0),
+        }
+        for label in ("Vocabulary", "Grammar", "Kanji", "Study"):
             button = themed_button(
                 nav,
                 variant="secondary",
-                text=label,
+                text="Flashcards" if label == "Study" else label,
                 height=44,
                 corner_radius=9,
                 font=ctk.CTkFont(size=14, weight="bold"),
-                command=lambda value=label: self.select_drawer_view(value),
+                command=self.start_context_study if label == "Study" else lambda value=label: self.select_drawer_view(value),
             )
-            row, column = divmod(index, 2)
+            row, column, columnspan, padx, pady = nav_layout[label]
             button.grid(
                 row=row,
                 column=column,
+                columnspan=columnspan,
                 sticky="ew",
-                padx=(0, 5) if column == 0 else (5, 0),
-                pady=(0, 5) if row == 0 else (5, 0),
+                padx=padx,
+                pady=pady,
             )
             self.nav_buttons[label] = button
+        self.context_study_button = self.nav_buttons["Study"]
 
         ctk.CTkLabel(
             self.drawer_panel,
@@ -594,14 +623,14 @@ class JLPTStudyApp(ctk.CTk):
             bd=0,
             highlightthickness=0,
         )
-        settings_backdrop = tk.Frame(
+        self.settings_backdrop_label = tk.Label(
             self.settings_scrim,
             bg=theme_color(("#2A1117", "#080508")),
             bd=0,
             highlightthickness=0,
         )
-        settings_backdrop.place(relx=0, rely=0, relwidth=1, relheight=1)
-        settings_backdrop.bind("<Button-1>", lambda _event: self.close_settings())
+        self.settings_backdrop_label.place(relx=0, rely=0, relwidth=1, relheight=1)
+        self.settings_backdrop_label.bind("<Button-1>", lambda _event: self.close_settings())
 
         self.settings_panel = ctk.CTkFrame(
             self.settings_scrim,
@@ -682,6 +711,18 @@ class JLPTStudyApp(ctk.CTk):
         if self.settings_open and self.settings_animation_after_id is None:
             return
         if not self.settings_scrim.place_info():
+            cache_key = self.drawer_backdrop_key()
+            if self.drawer_backdrop_cache_key == cache_key and self.drawer_backdrop_cache is not None:
+                self.settings_backdrop_image = self.drawer_backdrop_cache
+            else:
+                self.settings_backdrop_image = self.create_drawer_backdrop_image()
+            if self.settings_backdrop_image is not None:
+                self.settings_backdrop_label.configure(image=self.settings_backdrop_image)
+            else:
+                self.settings_backdrop_label.configure(
+                    image="",
+                    bg=theme_color(("#2A1117", "#080508")),
+                )
             self.settings_scrim.place(relx=0, rely=0, relwidth=1, relheight=1)
             self.settings_scrim.lift()
             self.settings_x = float(self.winfo_width())
@@ -729,16 +770,48 @@ class JLPTStudyApp(ctk.CTk):
         self.settings_panel.place_configure(x=round(self.settings_x))
         if not self.settings_open:
             self.settings_scrim.place_forget()
+            self.settings_backdrop_label.configure(image="")
+            self.settings_backdrop_image = None
+
+    def base_study_view(self, view=None):
+        view = view or self.current_view
+        return {
+            "Flashcards": "Vocabulary",
+            "Grammar Quiz": "Grammar",
+            "Kanji Flashcards": "Kanji",
+        }.get(view, view if view in {"Vocabulary", "Grammar", "Kanji"} else "Vocabulary")
+
+    def study_view_for_base(self, base_view):
+        return {
+            "Vocabulary": "Flashcards",
+            "Grammar": "Grammar Quiz",
+            "Kanji": "Kanji Flashcards",
+        }[base_view]
+
+    def start_context_study(self):
+        base_view = self.base_study_view()
+        if self.current_view == self.study_view_for_base(base_view):
+            self.close_drawer()
+            return
+        if base_view == "Grammar":
+            self.show_grammar_quiz_ready(self.current_level)
+        elif base_view == "Kanji":
+            self.show_kanji_flashcards(self.current_level)
+        else:
+            self.switch_view("Flashcards")
+        self.close_drawer()
 
     def sync_drawer_content(self):
-        vocabulary_mode = self.current_view == "Vocabulary"
-        if vocabulary_mode:
+        base_view = self.base_study_view()
+        browse_mode = self.current_view in {"Vocabulary", "Grammar", "Kanji"}
+        if browse_mode:
             self.browse_kana_label.grid()
             self.kana_rail.grid()
         else:
             self.browse_kana_label.grid_remove()
             self.kana_rail.grid_remove()
-        n1_enabled = self.current_view in {"Grammar", "Kanji"}
+        self.context_study_button.configure(text="Quiz" if base_view == "Grammar" else "Flashcards")
+        n1_enabled = base_view in {"Grammar", "Kanji"}
         self.level_buttons["N1"].configure(state="normal" if n1_enabled else "disabled")
 
     def drawer_backdrop_key(self):
@@ -804,7 +877,7 @@ class JLPTStudyApp(ctk.CTk):
                 pass
         self.set_nav_buttons(self.current_view, force=True)
         self.sync_drawer_content()
-        active_level = self.flash_level_var.get() if self.current_view == "Flashcards" else self.current_level
+        active_level = self.flash_level_var.get() if self.current_view in {"Flashcards", "Kanji Flashcards"} else self.current_level
         self.set_level_buttons(active_level, force=True)
         self.drawer_scrim.focus_set()
         self.drawer_open = True
@@ -879,11 +952,15 @@ class JLPTStudyApp(ctk.CTk):
         self.close_drawer()
 
     def select_drawer_level(self, level):
-        active_level = self.flash_level_var.get() if self.current_view == "Flashcards" else self.current_level
+        active_level = self.flash_level_var.get() if self.current_view in {"Flashcards", "Kanji Flashcards"} else self.current_level
         if level != active_level:
             self.search_var.set("")
         if self.current_view == "Flashcards":
             self.set_flash_level(level)
+        elif self.current_view == "Kanji Flashcards":
+            self.show_kanji_flashcards(level)
+        elif self.current_view == "Grammar Quiz":
+            self.show_grammar_quiz_ready(level)
         elif self.current_view in {"Grammar", "Kanji"}:
             self.show_reference(self.current_view, level)
         else:
@@ -1336,8 +1413,10 @@ class JLPTStudyApp(ctk.CTk):
             self.flash_header_actions.grid_configure(row=0, column=1, rowspan=2, sticky="e", pady=0)
             self.search_entry.configure(placeholder_text=self.search_placeholder(compact=False))
 
-        if self.current_view == "Flashcards":
+        if self.current_view in {"Flashcards", "Kanji Flashcards"}:
             self.show_flash_header_actions()
+        elif self.current_view == "Grammar Quiz":
+            self.show_quiz_header_status()
         else:
             self.show_vocab_header_status()
 
@@ -1500,6 +1579,78 @@ class JLPTStudyApp(ctk.CTk):
         self.restart_button.grid(row=0, column=2, sticky="ew", padx=(6, 0))
         self.restart_button.bind("<Enter>", self.prepare_restart_overlay_cache)
 
+    def _build_grammar_quiz(self):
+        self.quiz_view.grid_rowconfigure(0, weight=0)
+        self.quiz_view.grid_rowconfigure(1, weight=1)
+        self.quiz_view.grid_rowconfigure(2, weight=0)
+
+        self.quiz_progress_area = ctk.CTkFrame(self.quiz_view, fg_color="transparent")
+        self.quiz_progress_area.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        self.quiz_progress_area.grid_columnconfigure(0, weight=1)
+        self.quiz_progress_text_var = ctk.StringVar(value="")
+        self.quiz_progress_percent_var = ctk.StringVar(value="0%")
+        ctk.CTkLabel(
+            self.quiz_progress_area,
+            textvariable=self.quiz_progress_text_var,
+            text_color=MUTED,
+            font=ctk.CTkFont(size=13, weight="bold"),
+            anchor="w",
+        ).grid(row=0, column=0, sticky="w", pady=(0, 8))
+        ctk.CTkLabel(
+            self.quiz_progress_area,
+            textvariable=self.quiz_progress_percent_var,
+            text_color=MUTED,
+            font=ctk.CTkFont(size=12, weight="bold"),
+            anchor="e",
+        ).grid(row=0, column=1, sticky="e", pady=(0, 8))
+        self.quiz_progress_bar = ctk.CTkProgressBar(
+            self.quiz_progress_area,
+            height=8,
+            corner_radius=8,
+            fg_color=("#E8DAD2", "#3A3034"),
+            progress_color=(ACCENT, ACCENT_HOVER),
+        )
+        self.quiz_progress_bar.grid(row=1, column=0, columnspan=2, sticky="ew")
+        self.quiz_progress_bar.set(0.0)
+
+        self.quiz_card = ctk.CTkFrame(
+            self.quiz_view,
+            fg_color=PANEL,
+            border_width=1,
+            border_color=LINE,
+            corner_radius=18,
+        )
+        self.quiz_card.grid(row=1, column=0, sticky="nsew")
+        self.quiz_card.grid_columnconfigure(0, weight=1)
+        self.quiz_card.grid_rowconfigure(0, weight=1)
+
+        self.quiz_actions = ctk.CTkFrame(self.quiz_view, fg_color="transparent")
+        self.quiz_actions.grid(row=2, column=0, sticky="ew", pady=(18, 0))
+        self.quiz_actions.grid_columnconfigure((0, 1, 2), weight=1)
+        self.quiz_back_button = secondary_button(
+            self.quiz_actions,
+            text="Back",
+            height=46,
+            command=self.exit_grammar_quiz,
+        )
+        self.quiz_back_button.grid(row=0, column=0, sticky="ew", padx=(0, 6))
+        self.quiz_next_button = red_button(
+            self.quiz_actions,
+            text="Start Quiz",
+            height=46,
+            font=ctk.CTkFont(size=14, weight="bold"),
+            command=self.start_grammar_quiz,
+        )
+        self.quiz_next_button.grid(row=0, column=1, sticky="ew", padx=6)
+        self.quiz_restart_button = secondary_button(
+            self.quiz_actions,
+            text="Restart",
+            height=46,
+            command=lambda: self.show_grammar_quiz_ready(self.quiz_level),
+        )
+        self.quiz_restart_button.grid(row=0, column=2, sticky="ew", padx=(6, 0))
+        self.render_quiz_ready()
+
     def _configure_tree_style(self):
         dark = ctk.get_appearance_mode() == "Dark"
         bg = "#211720" if dark else "#FFFDF8"
@@ -1579,7 +1730,7 @@ class JLPTStudyApp(ctk.CTk):
     def handle_space_shortcut(self, event):
         if self.restart_dialog_is_open():
             return "break"
-        if self.current_view != "Flashcards":
+        if self.current_view not in {"Flashcards", "Kanji Flashcards"}:
             return None
         self.handle_flash_card_click()
         return "break"
@@ -1587,7 +1738,7 @@ class JLPTStudyApp(ctk.CTk):
     def handle_left_shortcut(self, event):
         if self.restart_dialog_is_open():
             return "break"
-        if self.current_view != "Flashcards":
+        if self.current_view not in {"Flashcards", "Kanji Flashcards"}:
             return None
         self.previous_card()
         return "break"
@@ -1595,7 +1746,7 @@ class JLPTStudyApp(ctk.CTk):
     def handle_right_shortcut(self, event):
         if self.restart_dialog_is_open():
             return "break"
-        if self.current_view != "Flashcards":
+        if self.current_view not in {"Flashcards", "Kanji Flashcards"}:
             return None
         if self.flash_deck:
             self.next_card()
@@ -1651,18 +1802,17 @@ class JLPTStudyApp(ctk.CTk):
             elif view in {"Grammar", "Kanji"}:
                 self.show_reference(view, self.current_level)
             else:
+                self.flash_source = "Vocabulary"
                 if self.flash_level_var.get() == "N1":
                     self.flash_level_var.set("N2")
                 self.prepare_vocabulary_for_view_switch()
                 self.show_flash_header_actions()
                 level = self.flash_level_var.get()
-                self.title_label.configure(text=f"JLPT {level} Flashcards")
+                self.current_level = level
+                self.title_label.configure(text=f"JLPT {level} Vocabulary Flashcards")
                 self.subtitle_label.configure(text="Tap the card to reveal and continue.")
                 self.count_var.set("")
-                if self.flashcards_ready:
-                    self.update_flash_rail_buttons(force=True)
-                else:
-                    self.reset_flashcards()
+                self.reset_flashcards()
                 self.flash_view.tkraise()
             if paint_locked:
                 self.update_idletasks()
@@ -1718,6 +1868,40 @@ class JLPTStudyApp(ctk.CTk):
         self.render_vocab_rows()
         self.vocab_view.tkraise()
 
+    def show_kanji_flashcards(self, level):
+        self.current_level = level
+        self.current_view = "Kanji Flashcards"
+        self.flash_source = "Kanji"
+        self.flash_level_var.set(level)
+        self.prepare_vocabulary_for_view_switch()
+        self.set_nav_buttons(self.current_view, force=True)
+        self.set_level_buttons(level, force=True)
+        self.show_flash_header_actions()
+        self.title_label.configure(text=f"JLPT {level} Kanji Flashcards")
+        self.subtitle_label.configure(text="Tap the card to reveal its readings and meaning.")
+        self.count_var.set("")
+        self.reset_flashcards()
+        self.flash_view.tkraise()
+
+    def show_grammar_quiz_ready(self, level):
+        self.current_level = level
+        self.current_view = "Grammar Quiz"
+        self.quiz_level = level
+        self.prepare_vocabulary_for_view_switch()
+        self.set_nav_buttons(self.current_view, force=True)
+        self.set_level_buttons(level, force=True)
+        self.show_quiz_header_status()
+        self.title_label.configure(text=f"JLPT {level} Grammar Quiz")
+        self.subtitle_label.configure(text="Four choices per question, randomized every session.")
+        self.quiz_stage = "ready"
+        self.quiz_deck = []
+        self.quiz_index = -1
+        self.quiz_mistakes = []
+        self.quiz_mistake_keys = set()
+        self.quiz_main_correct = 0
+        self.render_quiz_ready()
+        self.quiz_view.tkraise()
+
     def prepare_vocabulary_for_view_switch(self):
         if hasattr(self, "vocab_table"):
             self.vocab_table.cancel_scroll_animation()
@@ -1727,7 +1911,7 @@ class JLPTStudyApp(ctk.CTk):
             self.kana_rail_widget.cancel_animation()
 
     def show_flash_header_actions(self):
-        if self.current_view != "Flashcards":
+        if self.current_view not in {"Flashcards", "Kanji Flashcards"}:
             self.show_vocab_header_status()
             return
         if "count_label" in self.__dict__:
@@ -1745,12 +1929,23 @@ class JLPTStudyApp(ctk.CTk):
         if "vocab_import_button" in self.__dict__:
             self.vocab_import_button.grid_remove()
 
+    def show_quiz_header_status(self):
+        if "flash_header_actions" in self.__dict__:
+            self.flash_header_actions.grid_remove()
+        if "count_label" in self.__dict__:
+            self.count_label.grid_remove()
+        if "vocab_import_button" in self.__dict__:
+            self.vocab_import_button.grid_remove()
+
     def sync_current_view_layout(self):
         if not hasattr(self, "vocab_view"):
             return
-        if self.current_view == "Flashcards":
+        if self.current_view in {"Flashcards", "Kanji Flashcards"}:
             self.show_flash_header_actions()
             self.flash_view.tkraise()
+        elif self.current_view == "Grammar Quiz":
+            self.show_quiz_header_status()
+            self.quiz_view.tkraise()
         else:
             if hasattr(self, "vocab_table"):
                 self.vocab_table.set_rendering_enabled(True)
@@ -1762,8 +1957,12 @@ class JLPTStudyApp(ctk.CTk):
             return
         if not force and self.active_nav_button == active:
             return
+        base_view = self.base_study_view(active)
+        study_active = active in {"Flashcards", "Grammar Quiz", "Kanji Flashcards"}
+        self.context_study_button.configure(text="Quiz" if base_view == "Grammar" else "Flashcards")
         for name, button in self.nav_buttons.items():
-            apply_button_style(button, "primary" if name == active else "secondary")
+            selected = (name == base_view) or (name == "Study" and study_active)
+            apply_button_style(button, "primary" if selected else "secondary")
         self.active_nav_button = active
 
     def set_level_buttons(self, active, force=False):
@@ -1788,6 +1987,7 @@ class JLPTStudyApp(ctk.CTk):
             unit = "words"
         else:
             words = [dict(item) for item in self.data[self.current_view.lower()].get(self.current_level, [])]
+            words.sort(key=lambda row: reference_kana_sort_key(self.current_view, row))
             searchable_keys = tuple(key for key in words[0] if key != "source_url") if words else ()
             unit = "grammar points" if self.current_view == "Grammar" else "kanji"
         query = self.search_var.get().strip().lower()
@@ -1802,10 +2002,11 @@ class JLPTStudyApp(ctk.CTk):
         self.count_var.set(f"{len(words)} {unit}" if words else "0 matches")
         self.tree_items_by_kana = {}
 
-        if self.current_view == "Vocabulary":
+        if self.current_view in {"Vocabulary", "Grammar", "Kanji"}:
             for row_index, word in enumerate(words):
-                kana = normalized_first_kana(word["furigana"])
-                self.tree_items_by_kana.setdefault(kana, row_index)
+                kana = row_kana(self.current_view, word)
+                if kana:
+                    self.tree_items_by_kana.setdefault(kana, row_index)
 
         self.vocab_table.configure_mode(self.current_view)
         self.vocab_table.set_rows(words)
@@ -1840,7 +2041,7 @@ class JLPTStudyApp(ctk.CTk):
         return changed
 
     def sync_kana_from_table(self, kana):
-        if self.current_view != "Vocabulary" or not kana:
+        if self.current_view not in {"Vocabulary", "Grammar", "Kanji"} or not kana:
             return
         changed = self.open_kana_group(kana, close_others=True, animated=True)
         if kana == self.active_kana:
@@ -1849,7 +2050,7 @@ class JLPTStudyApp(ctk.CTk):
         self.update_kana_buttons(animated=changed)
 
     def update_kana_buttons(self, animated=False):
-        if self.current_view != "Vocabulary":
+        if self.current_view not in {"Vocabulary", "Grammar", "Kanji"}:
             self.kana_rail_widget.set_state(set(), None, set(), animated=False)
             return
         available = set(self.tree_items_by_kana)
@@ -1872,6 +2073,407 @@ class JLPTStudyApp(ctk.CTk):
         self.active_kana = target_kana
         self.update_kana_buttons(animated=True)
 
+    def clear_quiz_card(self):
+        self.cancel_quiz_shake()
+        for child in self.quiz_card.winfo_children():
+            child.destroy()
+
+    def quiz_inner_panel(self):
+        panel = ctk.CTkFrame(self.quiz_card, fg_color="transparent")
+        panel.grid(row=0, column=0, sticky="nsew", padx=34, pady=26)
+        panel.grid_columnconfigure(0, weight=1)
+        return panel
+
+    def configure_quiz_actions(
+        self,
+        *,
+        back_text="Back",
+        back_command=None,
+        back_enabled=True,
+        primary_text="Next",
+        primary_command=None,
+        primary_enabled=True,
+        restart_enabled=True,
+    ):
+        apply_button_style(self.quiz_back_button, "secondary")
+        apply_button_style(self.quiz_next_button, "primary")
+        apply_button_style(self.quiz_restart_button, "secondary")
+        self.quiz_back_button.configure(
+            text=back_text,
+            command=back_command or self.exit_grammar_quiz,
+            state="normal" if back_enabled else "disabled",
+        )
+        self.quiz_next_button.configure(
+            text=primary_text,
+            command=primary_command or self.advance_grammar_quiz,
+            state="normal" if primary_enabled else "disabled",
+        )
+        self.quiz_restart_button.configure(
+            text="Restart",
+            command=lambda: self.show_grammar_quiz_ready(self.quiz_level),
+            state="normal" if restart_enabled else "disabled",
+        )
+        if not back_enabled:
+            self.quiz_back_button.configure(text_color_disabled=BUTTON_DISABLED_TEXT)
+        if not primary_enabled:
+            self.quiz_next_button.configure(
+                fg_color=BUTTON_DISABLED_BG,
+                hover_color=BUTTON_DISABLED_BG,
+                border_color=LINE,
+                text_color=BUTTON_DISABLED_TEXT,
+                text_color_disabled=BUTTON_DISABLED_TEXT,
+            )
+        if not restart_enabled:
+            self.quiz_restart_button.configure(text_color_disabled=BUTTON_DISABLED_TEXT)
+
+    def set_quiz_progress(self, label_text, progress):
+        clamped = max(0.0, min(1.0, progress))
+        self.quiz_progress_text_var.set(label_text)
+        self.quiz_progress_percent_var.set(f"{round(clamped * 100)}%")
+        self.quiz_progress_bar.set(clamped)
+
+    def render_quiz_ready(self):
+        if not hasattr(self, "quiz_card"):
+            return
+        self.clear_quiz_card()
+        grammar = self.data.get("grammar", {}).get(self.quiz_level, [])
+        self.set_quiz_progress(
+            f"{len(grammar)} questions  •  randomized each session",
+            0.0,
+        )
+        panel = self.quiz_inner_panel()
+        panel.grid_rowconfigure(0, weight=1)
+        content = ctk.CTkFrame(panel, fg_color="transparent")
+        content.grid(row=0, column=0)
+        ctk.CTkLabel(
+            content,
+            text=f"JLPT {self.quiz_level} Grammar",
+            text_color=INK,
+            font=ctk.CTkFont(size=40, weight="bold"),
+        ).pack(pady=(0, 10))
+        ctk.CTkLabel(
+            content,
+            text="Ready",
+            text_color=MUTED,
+            font=ctk.CTkFont(size=22),
+        ).pack(pady=(0, 8))
+        ctk.CTkLabel(
+            content,
+            text=f"{len(grammar)} randomized questions  •  4 choices each",
+            text_color=MUTED,
+            font=ctk.CTkFont(size=14, weight="bold"),
+        ).pack(pady=(0, 8))
+        ctk.CTkLabel(
+            content,
+            text="Wrong answers will return in a Mistake Review before completion.",
+            text_color=MUTED,
+            font=ctk.CTkFont(size=14),
+            wraplength=620,
+            justify="center",
+        ).pack()
+        self.configure_quiz_actions(
+            back_text="Back",
+            back_command=self.exit_grammar_quiz,
+            primary_text="Start Quiz",
+            primary_command=self.start_grammar_quiz,
+            primary_enabled=bool(grammar),
+            restart_enabled=False,
+        )
+
+    def start_grammar_quiz(self):
+        self.quiz_stage = "main"
+        self.quiz_deck = [dict(item) for item in self.data.get("grammar", {}).get(self.quiz_level, [])]
+        random.shuffle(self.quiz_deck)
+        self.quiz_index = 0
+        self.quiz_mistakes = []
+        self.quiz_mistake_keys = set()
+        self.quiz_main_correct = 0
+        self.quiz_answered = False
+        self.render_quiz_question()
+
+    def quiz_question_key(self, question):
+        return json.dumps(
+            [question.get("pattern", ""), question.get("romaji", ""), question.get("meaning", "")],
+            ensure_ascii=False,
+        )
+
+    def randomized_quiz_options(self, question):
+        correct = question.get("meaning", "")
+        seen = {correct}
+        distractors = []
+        for candidate in self.data.get("grammar", {}).get(self.quiz_level, []):
+            meaning = candidate.get("meaning", "")
+            if meaning and meaning not in seen:
+                seen.add(meaning)
+                distractors.append(meaning)
+        chosen = random.sample(distractors, min(3, len(distractors)))
+        options = chosen + [correct]
+        random.shuffle(options)
+        return options
+
+    def render_quiz_question(self):
+        if not self.quiz_deck or not (0 <= self.quiz_index < len(self.quiz_deck)):
+            return
+        self.clear_quiz_card()
+        self.quiz_answered = False
+        self.quiz_option_buttons = []
+        question = self.quiz_deck[self.quiz_index]
+        panel = self.quiz_inner_panel()
+        panel.grid_rowconfigure(0, weight=1)
+        section = "Mistake Review" if self.quiz_stage == "review" else "Grammar Quiz"
+        completed = self.quiz_index + 1
+        self.set_quiz_progress(
+            f"{section}  •  {completed} / {len(self.quiz_deck)}",
+            completed / max(1, len(self.quiz_deck)),
+        )
+        content = ctk.CTkFrame(panel, fg_color="transparent")
+        content.grid(row=0, column=0, sticky="ew")
+        content.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(
+            content,
+            text=question.get("pattern", ""),
+            text_color=INK,
+            font=ctk.CTkFont(size=40, weight="bold"),
+            wraplength=760,
+            justify="center",
+        ).grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        ctk.CTkLabel(
+            content,
+            text=question.get("romaji", ""),
+            text_color=MUTED,
+            font=ctk.CTkFont(size=17),
+            wraplength=760,
+            justify="center",
+        ).grid(row=1, column=0, sticky="ew", pady=(0, 8))
+        ctk.CTkLabel(
+            content,
+            text="Choose the correct meaning",
+            text_color=MUTED,
+            font=ctk.CTkFont(size=14, weight="bold"),
+        ).grid(row=2, column=0, pady=(0, 16))
+
+        options_frame = ctk.CTkFrame(content, fg_color="transparent")
+        options_frame.grid(row=3, column=0, sticky="ew")
+        options_frame.grid_columnconfigure((0, 1), weight=1)
+        for index, option in enumerate(self.randomized_quiz_options(question)):
+            button = secondary_button(
+                options_frame,
+                text=option,
+                height=72,
+                font=ctk.CTkFont(size=14, weight="bold"),
+                command=lambda value=option, button_index=index: self.answer_grammar_quiz(value, button_index),
+            )
+            row, column = divmod(index, 2)
+            button.grid(
+                row=row,
+                column=column,
+                sticky="nsew",
+                padx=(0, 6) if column == 0 else (6, 0),
+                pady=(0, 6) if row == 0 else (6, 0),
+            )
+            self.quiz_option_buttons.append((option, button))
+
+        self.quiz_feedback_label = ctk.CTkLabel(
+            content,
+            text="",
+            text_color=MUTED,
+            font=ctk.CTkFont(size=15, weight="bold"),
+            wraplength=720,
+            justify="center",
+        )
+        self.quiz_feedback_label.grid(row=4, column=0, pady=(16, 0))
+        self.configure_quiz_actions(
+            back_text="Exit",
+            back_command=self.exit_grammar_quiz,
+            primary_text="Next",
+            primary_command=self.advance_grammar_quiz,
+            primary_enabled=False,
+            restart_enabled=True,
+        )
+
+    def answer_grammar_quiz(self, selected, selected_index):
+        if self.quiz_answered or not self.quiz_deck:
+            return
+        self.quiz_answered = True
+        question = self.quiz_deck[self.quiz_index]
+        correct = question.get("meaning", "")
+        is_correct = selected == correct
+        if is_correct and self.quiz_stage == "main":
+            self.quiz_main_correct += 1
+        if not is_correct and self.quiz_stage == "main":
+            key = self.quiz_question_key(question)
+            if key not in self.quiz_mistake_keys:
+                self.quiz_mistake_keys.add(key)
+                self.quiz_mistakes.append(dict(question))
+
+        success_bg = ("#DCFCE7", "#173522")
+        success_border = ("#22C55E", "#4ADE80")
+        error_bg = ("#FFE4E6", "#3B1720")
+        error_border = ("#E11D48", "#FB7185")
+        for index, (option, button) in enumerate(self.quiz_option_buttons):
+            if option == correct:
+                button.configure(
+                    state="disabled",
+                    fg_color=success_bg,
+                    hover_color=success_bg,
+                    border_color=success_border,
+                    text_color=("#166534", "#BBF7D0"),
+                    text_color_disabled=("#166534", "#BBF7D0"),
+                )
+            elif index == selected_index:
+                button.configure(
+                    state="disabled",
+                    fg_color=error_bg,
+                    hover_color=error_bg,
+                    border_color=error_border,
+                    text_color=("#9F1239", "#FFE4E6"),
+                    text_color_disabled=("#9F1239", "#FFE4E6"),
+                )
+            else:
+                button.configure(state="disabled", text_color_disabled=BUTTON_DISABLED_TEXT)
+
+        if is_correct:
+            self.quiz_feedback_label.configure(text="Correct!", text_color=("#166534", "#86EFAC"))
+        else:
+            feedback = (
+                "Not quite — check the correct answer above."
+                if self.quiz_stage == "review"
+                else "Not quite — added to Mistake Review."
+            )
+            self.quiz_feedback_label.configure(text=feedback, text_color=("#9F1239", "#FDA4AF"))
+            self.start_quiz_shake()
+        apply_button_style(self.quiz_next_button, "primary")
+        self.quiz_next_button.configure(state="normal")
+
+    def advance_grammar_quiz(self):
+        if not self.quiz_answered:
+            return
+        self.quiz_index += 1
+        if self.quiz_index < len(self.quiz_deck):
+            self.render_quiz_question()
+            return
+        if self.quiz_stage == "main" and self.quiz_mistakes:
+            self.quiz_stage = "review_ready"
+            self.render_mistake_review_ready()
+        else:
+            self.quiz_stage = "complete"
+            self.render_quiz_complete()
+
+    def render_mistake_review_ready(self):
+        self.clear_quiz_card()
+        self.set_quiz_progress(
+            f"{len(self.quiz_mistakes)} mistake{'s' if len(self.quiz_mistakes) != 1 else ''} to review",
+            0.0,
+        )
+        panel = self.quiz_inner_panel()
+        panel.grid_rowconfigure(0, weight=1)
+        content = ctk.CTkFrame(panel, fg_color="transparent")
+        content.grid(row=0, column=0)
+        ctk.CTkLabel(content, text="Mistake Review", text_color=INK, font=ctk.CTkFont(size=40, weight="bold")).pack(pady=(0, 10))
+        ctk.CTkLabel(content, text="Ready", text_color=MUTED, font=ctk.CTkFont(size=22)).pack(pady=(0, 8))
+        ctk.CTkLabel(
+            content,
+            text=f"You have {len(self.quiz_mistakes)} question{'s' if len(self.quiz_mistakes) != 1 else ''} to review.",
+            text_color=MUTED,
+            font=ctk.CTkFont(size=16, weight="bold"),
+        ).pack(pady=(0, 8))
+        ctk.CTkLabel(
+            content,
+            text="The questions and all answer positions will be shuffled again.",
+            text_color=MUTED,
+            font=ctk.CTkFont(size=14),
+            wraplength=620,
+            justify="center",
+        ).pack()
+        self.configure_quiz_actions(
+            back_text="Exit",
+            back_command=self.exit_grammar_quiz,
+            primary_text="Start Review",
+            primary_command=self.start_mistake_review,
+            primary_enabled=True,
+            restart_enabled=True,
+        )
+
+    def start_mistake_review(self):
+        self.quiz_stage = "review"
+        self.quiz_deck = [dict(item) for item in self.quiz_mistakes]
+        random.shuffle(self.quiz_deck)
+        self.quiz_index = 0
+        self.quiz_answered = False
+        self.render_quiz_question()
+
+    def render_quiz_complete(self):
+        self.clear_quiz_card()
+        total = len(self.data.get("grammar", {}).get(self.quiz_level, []))
+        self.set_quiz_progress(f"{total} / {total} completed", 1.0)
+        panel = self.quiz_inner_panel()
+        panel.grid_rowconfigure(0, weight=1)
+        content = ctk.CTkFrame(panel, fg_color="transparent")
+        content.grid(row=0, column=0)
+        ctk.CTkLabel(content, text="Quiz Completed!", text_color=INK, font=ctk.CTkFont(size=40, weight="bold")).pack(pady=(0, 10))
+        ctk.CTkLabel(
+            content,
+            text=f"{self.quiz_main_correct} / {total} correct on the first pass",
+            text_color=MUTED,
+            font=ctk.CTkFont(size=17, weight="bold"),
+        ).pack(pady=(0, 6))
+        review_text = "Perfect run — no Mistake Review needed." if not self.quiz_mistakes else f"Reviewed {len(self.quiz_mistakes)} mistake{'s' if len(self.quiz_mistakes) != 1 else ''}."
+        ctk.CTkLabel(content, text=review_text, text_color=MUTED, font=ctk.CTkFont(size=14)).pack()
+        self.configure_quiz_actions(
+            back_text="Back",
+            back_command=self.exit_grammar_quiz,
+            primary_text="Complete",
+            primary_command=self.exit_grammar_quiz,
+            primary_enabled=False,
+            restart_enabled=True,
+        )
+
+    def start_quiz_shake(self):
+        self.cancel_quiz_shake()
+        offsets = (-12, 10, -8, 7, -5, 3, 0)
+
+        def animate(index=0):
+            offset = offsets[index]
+            self.quiz_card.grid_configure(padx=(max(0, offset), max(0, -offset)))
+            if index + 1 < len(offsets):
+                self.quiz_shake_after_id = self.after(34, lambda: animate(index + 1))
+            else:
+                self.quiz_shake_after_id = None
+
+        animate()
+
+    def cancel_quiz_shake(self):
+        if self.quiz_shake_after_id is not None:
+            try:
+                self.after_cancel(self.quiz_shake_after_id)
+            except tk.TclError:
+                pass
+            self.quiz_shake_after_id = None
+        if hasattr(self, "quiz_card"):
+            self.quiz_card.grid_configure(padx=0)
+
+    def exit_grammar_quiz(self):
+        self.cancel_quiz_shake()
+        self.show_reference("Grammar", self.quiz_level)
+
+    def flash_available_items(self, level=None):
+        level = level or self.flash_level_var.get()
+        if self.flash_source == "Kanji":
+            return [
+                {
+                    "kanji": item.get("kanji", ""),
+                    "furigana": f"On'yomi: {item.get('onyomi', '') or '—'}",
+                    "romaji": f"Kun'yomi: {item.get('kunyomi', '') or '—'}",
+                    "type": "Kanji",
+                    "meaning": item.get("meaning", ""),
+                }
+                for item in self.data.get("kanji", {}).get(level, [])
+            ]
+        return self.words(level).copy()
+
+    def flash_progress_key(self, level=None):
+        return f"{self.flash_source}:{level or self.flash_level_var.get()}"
+
     def reset_flashcards(self, restore_saved=True, clear_saved=False):
         self.flashcards_ready = True
         level = self.flash_level_var.get()
@@ -1891,22 +2493,26 @@ class JLPTStudyApp(ctk.CTk):
         self.flash_complete = False
         self.count_var.set("")
         self.set_flash_save_status("Not saved")
-        if not self.words(level):
-            self.card_front_var.set(f"JLPT {level}")
+        available = self.flash_available_items(level)
+        if not available:
+            self.card_front_var.set(f"JLPT {level} {self.flash_source}")
             self.card_back_var.set("Coming soon")
             self.card_hint_var.set("")
             self.apply_flashcard_style()
             return
-        self.card_front_var.set(f"JLPT {level}")
-        self.card_back_var.set(f"{len(self.words(level))} cards")
+        self.card_front_var.set(f"JLPT {level} {self.flash_source}")
+        self.card_back_var.set(f"{len(available)} cards")
         self.card_hint_var.set("Tap the center or Start to begin.")
         self.apply_flashcard_style()
 
     def clear_saved_flashcards(self, level):
         levels = self.flash_progress.get("levels")
-        if not isinstance(levels, dict) or level not in levels:
+        progress_key = self.flash_progress_key(level)
+        if not isinstance(levels, dict):
             return
-        del levels[level]
+        levels.pop(progress_key, None)
+        if self.flash_source == "Vocabulary":
+            levels.pop(level, None)
         self.write_flash_progress()
 
     def restart_flashcards_to_ready(self):
@@ -2021,12 +2627,13 @@ class JLPTStudyApp(ctk.CTk):
             return None
 
     def set_flash_level(self, level):
-        if level == "N1":
+        if level == "N1" and self.flash_source != "Kanji":
             return
         self.flash_level_var.set(level)
+        self.current_level = level
         self.set_level_buttons(level, force=True)
-        if self.current_view == "Flashcards" and hasattr(self, "title_label"):
-            self.title_label.configure(text=f"JLPT {level} Flashcards")
+        if self.current_view in {"Flashcards", "Kanji Flashcards"} and hasattr(self, "title_label"):
+            self.title_label.configure(text=f"JLPT {level} {self.flash_source} Flashcards")
         self.reset_flashcards()
 
     def update_flash_rail_buttons(self, force=False):
@@ -2035,7 +2642,7 @@ class JLPTStudyApp(ctk.CTk):
         level = self.flash_level_var.get()
         if not force and self.flash_rail_selected_level == level:
             return
-        if self.current_view == "Flashcards":
+        if self.current_view in {"Flashcards", "Kanji Flashcards"}:
             self.set_level_buttons(level, force=True)
         self.flash_rail_selected_level = level
 
@@ -2098,7 +2705,7 @@ class JLPTStudyApp(ctk.CTk):
         self.hide_completion_prompt()
         self.clear_completion_canvas()
         level = self.flash_level_var.get()
-        self.flash_deck = self.words(level).copy()
+        self.flash_deck = self.flash_available_items(level)
         if not self.flash_deck:
             self.reset_flashcards()
             return
@@ -2259,7 +2866,7 @@ class JLPTStudyApp(ctk.CTk):
         if total:
             done = total if self.flash_complete else min(max(self.flash_index + 1, 0), total)
         else:
-            total = len(self.words(self.flash_level_var.get()))
+            total = len(self.flash_available_items(self.flash_level_var.get()))
             done = 0
         value = done / total if total else 0.0
         self.flash_save_progress_var.set(f"{done}/{total}" if total else "0/0")
@@ -2680,7 +3287,7 @@ class JLPTStudyApp(ctk.CTk):
             self.show_save_toast("Start a deck first", success=False)
             return
         levels = self.flash_progress.setdefault("levels", {})
-        levels[self.flash_level_var.get()] = {
+        levels[self.flash_progress_key()] = {
             "deck": [self.flash_word_key(word) for word in self.flash_deck],
             "index": self.flash_index,
             "answer_visible": self.card_answer_visible,
@@ -2695,10 +3302,13 @@ class JLPTStudyApp(ctk.CTk):
             self.show_save_toast("Save failed", success=False)
 
     def restore_flashcards(self, level):
-        saved = self.flash_progress.get("levels", {}).get(level)
+        levels = self.flash_progress.get("levels", {})
+        saved = levels.get(self.flash_progress_key(level))
+        if saved is None and self.flash_source == "Vocabulary":
+            saved = levels.get(level)
         if not isinstance(saved, dict):
             return False
-        available_words = {self.flash_word_key(word): word for word in self.words(level)}
+        available_words = {self.flash_word_key(word): word for word in self.flash_available_items(level)}
         deck = [available_words[key] for key in saved.get("deck", []) if key in available_words]
         if not deck:
             return False
@@ -3331,7 +3941,7 @@ class VocabGrid(tk.Frame):
 
     def configure_mode(self, mode):
         self.mode = mode
-        self.group_by_kana = mode == "Vocabulary"
+        self.group_by_kana = mode in {"Vocabulary", "Grammar", "Kanji"}
         if mode == "Vocabulary":
             self.columns = [
                 ("kanji", "Word", 1.15),
@@ -3434,7 +4044,7 @@ class VocabGrid(tk.Frame):
             return
         last_kana = None
         for row_index, word in enumerate(self.rows):
-            kana = normalized_first_kana(word["furigana"])
+            kana = row_kana(self.mode, word)
             if kana and kana != last_kana:
                 if self.items:
                     self.items.append({"kind": "gap"})
@@ -3773,14 +4383,14 @@ class VocabGrid(tk.Frame):
             if item["kind"] == "section":
                 return item["kana"]
             if item["kind"] == "word":
-                return normalized_first_kana(item["word"]["furigana"])
+                return row_kana(self.mode, item["word"])
         return None
 
     def selected_kana(self):
         if not self.group_by_kana or self.selected_index is None:
             return None
         if 0 <= self.selected_index < len(self.rows):
-            return normalized_first_kana(self.rows[self.selected_index]["furigana"])
+            return row_kana(self.mode, self.rows[self.selected_index])
         return None
 
     def sync_active_kana(self):
@@ -3810,6 +4420,70 @@ def normalized_first_kana(text):
         if char in KANA_INDEX:
             return char
     return ""
+
+
+ROMAJI_PREFIX_TO_BASE = (
+    ("kya", "ki"), ("kyu", "ki"), ("kyo", "ki"),
+    ("gya", "ki"), ("gyu", "ki"), ("gyo", "ki"),
+    ("sha", "shi"), ("shu", "shi"), ("sho", "shi"),
+    ("sya", "shi"), ("syu", "shi"), ("syo", "shi"),
+    ("jya", "shi"), ("jyu", "shi"), ("jyo", "shi"),
+    ("cha", "chi"), ("chu", "chi"), ("cho", "chi"),
+    ("cya", "chi"), ("cyu", "chi"), ("cyo", "chi"),
+    ("nya", "ni"), ("nyu", "ni"), ("nyo", "ni"),
+    ("hya", "hi"), ("hyu", "hi"), ("hyo", "hi"),
+    ("bya", "hi"), ("byu", "hi"), ("byo", "hi"),
+    ("pya", "hi"), ("pyu", "hi"), ("pyo", "hi"),
+    ("mya", "mi"), ("myu", "mi"), ("myo", "mi"),
+    ("rya", "ri"), ("ryu", "ri"), ("ryo", "ri"),
+    ("tsu", "tsu"), ("shi", "shi"), ("chi", "chi"),
+    ("ja", "shi"), ("ju", "shi"), ("jo", "shi"), ("ji", "shi"),
+    ("ga", "ka"), ("gi", "ki"), ("gu", "ku"), ("ge", "ke"), ("go", "ko"),
+    ("za", "sa"), ("zi", "shi"), ("zu", "su"), ("ze", "se"), ("zo", "so"),
+    ("da", "ta"), ("di", "chi"), ("du", "tsu"), ("de", "te"), ("do", "to"),
+    ("ba", "ha"), ("bi", "hi"), ("bu", "fu"), ("be", "he"), ("bo", "ho"),
+    ("pa", "ha"), ("pi", "hi"), ("pu", "fu"), ("pe", "he"), ("po", "ho"),
+    ("fa", "fu"), ("fi", "fu"), ("fe", "fu"), ("fo", "fu"),
+)
+KANA_BY_ROMAJI = {romaji: kana for kana, romaji in KANA_ROMAJI.items()}
+
+
+def kana_from_romaji(text):
+    match = re.search(r"[a-z]+", str(text or "").lower())
+    if not match:
+        return ""
+    token = match.group(0)
+    for prefix, base in ROMAJI_PREFIX_TO_BASE:
+        if token.startswith(prefix):
+            return KANA_BY_ROMAJI.get(base, "")
+    for base in sorted(KANA_BY_ROMAJI, key=len, reverse=True):
+        if token.startswith(base):
+            return KANA_BY_ROMAJI[base]
+    return ""
+
+
+def row_kana(mode, row):
+    if mode == "Vocabulary":
+        return normalized_first_kana(row.get("furigana", ""))
+    if mode == "Grammar":
+        return kana_from_romaji(row.get("romaji", "")) or normalized_first_kana(row.get("pattern", ""))
+    if mode == "Kanji":
+        return (
+            normalized_first_kana(row.get("onyomi", ""))
+            or normalized_first_kana(row.get("kunyomi", ""))
+            or kana_from_romaji(row.get("onyomi", ""))
+            or kana_from_romaji(row.get("kunyomi", ""))
+        )
+    return ""
+
+
+def reference_kana_sort_key(mode, row):
+    kana = row_kana(mode, row)
+    if mode == "Grammar":
+        reading = row.get("romaji", "")
+    else:
+        reading = row.get("onyomi", "") or row.get("kunyomi", "")
+    return KANA_INDEX.get(kana, len(KANA_ORDER)), str(reading).lower()
 
 
 def sortable_kana_reading(text):
