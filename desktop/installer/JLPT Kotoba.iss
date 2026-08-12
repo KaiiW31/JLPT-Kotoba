@@ -1,5 +1,5 @@
 #define MyAppName "JLPT Kotoba"
-#define MyAppVersion "1.4.1"
+#define MyAppVersion "1.4.2"
 #define MyAppPublisher "KaiiW31"
 #define MyAppURL "https://github.com/KaiiW31/JLPT-Kotoba"
 #define MyAppExeName "JLPT Kotoba.exe"
@@ -28,7 +28,7 @@ WizardStyle=modern
 CloseApplications=yes
 RestartApplications=no
 SetupLogging=yes
-VersionInfoVersion=1.4.1.0
+VersionInfoVersion=1.4.2.0
 VersionInfoProductVersion={#MyAppVersion}
 VersionInfoProductName={#MyAppName}
 VersionInfoDescription={#MyAppName} Setup

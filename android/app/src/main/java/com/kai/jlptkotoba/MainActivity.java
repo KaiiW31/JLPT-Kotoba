@@ -117,7 +117,6 @@ public final class MainActivity extends Activity {
     private VelocityTracker drawerVelocityTracker;
     private View settingsScrim;
     private LinearLayout settingsDrawer;
-    private Button settingsEditButton;
     private boolean settingsOpen;
     private boolean settingsGestureTracking;
     private boolean settingsGestureDragging;
@@ -348,13 +347,13 @@ public final class MainActivity extends Activity {
         modes.setOrientation(LinearLayout.HORIZONTAL);
         String baseMode = baseStudyMode(currentMode);
         Button vocabulary = button("Vocabulary", "vocabulary".equals(baseMode), false);
-        vocabulary.setOnClickListener(view -> closeDrawer(() -> selectMode("vocabulary")));
+        vocabulary.setOnClickListener(view -> selectBaseModeKeepingDrawerOpen("vocabulary"));
         modes.addView(vocabulary, weightedButtonParams(0, dp(4)));
         Button grammar = button("Grammar", "grammar".equals(baseMode), false);
-        grammar.setOnClickListener(view -> closeDrawer(() -> selectMode("grammar")));
+        grammar.setOnClickListener(view -> selectBaseModeKeepingDrawerOpen("grammar"));
         modes.addView(grammar, weightedButtonParams(dp(4), dp(4)));
         Button kanji = button("Kanji", "kanji".equals(baseMode), false);
-        kanji.setOnClickListener(view -> closeDrawer(() -> selectMode("kanji")));
+        kanji.setOnClickListener(view -> selectBaseModeKeepingDrawerOpen("kanji"));
         modes.addView(kanji, weightedButtonParams(dp(4), 0));
         menuContent.addView(modes);
 
@@ -496,23 +495,14 @@ public final class MainActivity extends Activity {
             darkMode = !darkMode;
             preferences.edit().putBoolean(PREF_DARK_MODE, darkMode).apply();
             buildInterface();
+            settingsDrawer.post(() -> {
+                showSettingsLayer();
+                settingsDrawer.setTranslationX(0f);
+                settingsScrim.setAlpha(1f);
+                settingsOpen = true;
+            });
         });
         body.addView(theme, drawerItemParams(0));
-
-        body.addView(drawerSectionLabel("VOCABULARY"));
-        settingsEditButton = button("Edit selected word", false, false);
-        settingsEditButton.setOnClickListener(view -> closeSettings(() -> openVocabularyEditor(selectedVocabularyWord)));
-        body.addView(settingsEditButton, drawerItemParams(0));
-        boolean vocabularyMode = "vocabulary".equals(currentMode);
-        Button importCsv = button("Import CSV", false, false);
-        importCsv.setEnabled(vocabularyMode);
-        importCsv.setAlpha(vocabularyMode ? 1f : 0.42f);
-        importCsv.setOnClickListener(view -> closeSettings(this::openCsvPicker));
-        body.addView(importCsv, drawerItemParams(dp(8)));
-
-        TextView source = label("Study lists: JLPT Sensei\nAvailable offline after installation.", 12, muted, Typeface.NORMAL);
-        source.setPadding(dp(4), dp(24), dp(4), 0);
-        body.addView(source);
         scroll.addView(body, new ScrollView.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
@@ -524,16 +514,6 @@ public final class MainActivity extends Activity {
         ));
         settingsDrawer.setTranslationX(width);
         settingsDrawer.setVisibility(View.INVISIBLE);
-        updateSettingsActions();
-    }
-
-    private void updateSettingsActions() {
-        if (settingsEditButton == null) {
-            return;
-        }
-        boolean canEdit = "vocabulary".equals(currentMode) && selectedVocabularyWord != null;
-        settingsEditButton.setEnabled(canEdit);
-        settingsEditButton.setAlpha(canEdit ? 1f : 0.42f);
     }
 
     private void showSettingsLayer() {
@@ -557,7 +537,6 @@ public final class MainActivity extends Activity {
             return;
         }
         hideKeyboard();
-        updateSettingsActions();
         showSettingsLayer();
         animateSettingsTo(true, null);
     }
@@ -1087,6 +1066,20 @@ public final class MainActivity extends Activity {
         }
     }
 
+    private void selectBaseModeKeepingDrawerOpen(String mode) {
+        if (mode.equals(currentMode)) {
+            return;
+        }
+        selectMode(mode);
+        drawer.post(() -> {
+            syncDrawerToActiveKana();
+            showDrawerLayer();
+            drawer.setTranslationX(0f);
+            drawerScrim.setAlpha(1f);
+            drawerOpen = true;
+        });
+    }
+
     private void selectMode(String mode) {
         if (mode.equals(currentMode)) {
             return;
@@ -1591,15 +1584,6 @@ public final class MainActivity extends Activity {
                     .show();
             return true;
         });
-        vocabularyList.setOnItemClickListener((parent, view, position, id) -> {
-            Word selected = wordAdapter.getItem(position);
-            if (selected != null) {
-                selectedVocabularyWord = selected;
-                updateSettingsActions();
-                Toast.makeText(this, "Selected for editing: " + displayWord(selected), Toast.LENGTH_SHORT).show();
-            }
-        });
-
         vocabularyList.setOnScrollListener(new AbsListView.OnScrollListener() {
             @Override
             public void onScrollStateChanged(AbsListView view, int scrollState) {

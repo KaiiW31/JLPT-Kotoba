@@ -676,33 +676,8 @@ class JLPTStudyApp(ctk.CTk):
             command=self.toggle_theme,
         )
         self.settings_theme_button.grid(row=1, column=0, sticky="ew")
-
-        ctk.CTkLabel(body, text="VOCABULARY", text_color=MUTED, font=ctk.CTkFont(size=11, weight="bold"), anchor="w").grid(row=2, column=0, sticky="ew", pady=(22, 8))
-        self.settings_edit_button = secondary_button(
-            body,
-            text="Edit selected word",
-            height=46,
-            command=lambda: self.close_settings_then(lambda: self.open_vocab_editor("edit")),
-        )
-        self.settings_edit_button.grid(row=3, column=0, sticky="ew")
-        self.settings_import_button = secondary_button(
-            body,
-            text="Import CSV",
-            height=46,
-            command=lambda: self.close_settings_then(self.open_vocab_import_file),
-        )
-        self.settings_import_button.grid(row=4, column=0, sticky="ew", pady=(10, 0))
-        ctk.CTkLabel(
-            body,
-            text="Study lists: JLPT Sensei\nAvailable offline after installation.",
-            text_color=MUTED,
-            justify="left",
-            anchor="w",
-            font=ctk.CTkFont(size=12),
-        ).grid(row=5, column=0, sticky="ew", pady=(26, 0))
         self.settings_scrim.bind("<Escape>", lambda _event: self.close_settings())
         self.settings_scrim.place_forget()
-        self.update_vocab_edit_buttons()
 
     def theme_action_text(self):
         return "Use light theme" if ctk.get_appearance_mode() == "Dark" else "Use dark theme"
@@ -729,7 +704,6 @@ class JLPTStudyApp(ctk.CTk):
             self.settings_target_x = self.settings_x
             self.settings_panel.place_configure(x=round(self.settings_x))
         self.settings_theme_button.configure(text=self.theme_action_text())
-        self.update_vocab_edit_buttons()
         self.settings_scrim.focus_set()
         self.settings_open = True
         self.start_settings_animation(max(0, self.winfo_width() - self.settings_width))
@@ -746,6 +720,52 @@ class JLPTStudyApp(ctk.CTk):
             return
         self.close_settings()
         self.after(280, callback)
+
+    def refresh_open_settings_backdrop(self):
+        if not self.settings_open or not self.settings_scrim.place_info():
+            return
+        panel_x = round(self.settings_x)
+        self.settings_scrim.place_forget()
+        self.update_idletasks()
+        self.drawer_backdrop_cache = None
+        self.drawer_backdrop_cache_key = None
+        self.settings_backdrop_image = self.create_drawer_backdrop_image()
+        if self.settings_backdrop_image is not None:
+            self.settings_backdrop_label.configure(image=self.settings_backdrop_image)
+        else:
+            self.settings_backdrop_label.configure(
+                image="",
+                bg=theme_color(("#2A1117", "#080508")),
+            )
+        self.settings_scrim.place(relx=0, rely=0, relwidth=1, relheight=1)
+        self.settings_panel.place_configure(x=panel_x)
+        self.settings_scrim.lift()
+        self.settings_scrim.focus_set()
+
+    def refresh_open_drawer_backdrop(self):
+        if not self.drawer_open or not self.drawer_scrim.place_info():
+            return
+        panel_x = round(self.drawer_x)
+        self.drawer_scrim.place_forget()
+        self.update_idletasks()
+        self.drawer_backdrop_cache = None
+        self.drawer_backdrop_cache_key = None
+        self.drawer_backdrop_image = self.create_drawer_backdrop_image()
+        if self.drawer_backdrop_image is not None:
+            self.drawer_backdrop_label.configure(image=self.drawer_backdrop_image)
+        else:
+            self.drawer_backdrop_label.configure(
+                image="",
+                bg=theme_color(("#2A1117", "#080508")),
+            )
+        self.drawer_scrim.place(relx=0, rely=0, relwidth=1, relheight=1)
+        self.drawer_panel.place_configure(x=panel_x)
+        self.drawer_scrim.lift()
+        try:
+            self.drawer_scrim.grab_set()
+        except tk.TclError:
+            pass
+        self.drawer_scrim.focus_set()
 
     def start_settings_animation(self, target_x):
         self.settings_target_x = float(target_x)
@@ -879,6 +899,7 @@ class JLPTStudyApp(ctk.CTk):
         self.sync_drawer_content()
         active_level = self.flash_level_var.get() if self.current_view in {"Flashcards", "Kanji Flashcards"} else self.current_level
         self.set_level_buttons(active_level, force=True)
+        self.refresh_open_drawer_backdrop()
         self.drawer_scrim.focus_set()
         self.drawer_open = True
         self.start_drawer_animation(0)
@@ -949,7 +970,10 @@ class JLPTStudyApp(ctk.CTk):
         if view != self.current_view:
             self.search_var.set("")
         self.switch_view(view)
-        self.close_drawer()
+        self.set_nav_buttons(self.current_view, force=True)
+        self.sync_drawer_content()
+        active_level = self.flash_level_var.get() if self.current_view in {"Flashcards", "Kanji Flashcards"} else self.current_level
+        self.set_level_buttons(active_level, force=True)
 
     def select_drawer_level(self, level):
         active_level = self.flash_level_var.get() if self.current_view in {"Flashcards", "Kanji Flashcards"} else self.current_level
@@ -1786,6 +1810,7 @@ class JLPTStudyApp(ctk.CTk):
         self.set_flash_save_status(self.flash_save_status_var.get())
         if hasattr(self, "vocab_table"):
             self.vocab_table.refresh_theme()
+        self.refresh_open_settings_backdrop()
 
     def switch_view(self, view):
         if view == self.current_view:
