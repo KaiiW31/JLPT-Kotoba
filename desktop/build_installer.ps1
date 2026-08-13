@@ -1,5 +1,5 @@
 $jlptDesktopDirectory = Split-Path -Parent $MyInvocation.MyCommand.Path
-$jlptPortableExecutable = Join-Path $jlptDesktopDirectory "dist\JLPT Kotoba.exe"
+$jlptPackagedExecutable = Join-Path $jlptDesktopDirectory "dist\JLPT Kotoba.exe"
 $jlptInstallerScript = Join-Path $jlptDesktopDirectory "installer\JLPT Kotoba.iss"
 $jlptLocalPrograms = Join-Path ([Environment]::GetFolderPath("LocalApplicationData")) "Programs"
 $jlptCompilerCandidates = @(
@@ -9,8 +9,8 @@ $jlptCompilerCandidates = @(
 )
 $jlptCompiler = $jlptCompilerCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
 
-if (-not (Test-Path -LiteralPath $jlptPortableExecutable)) {
-    throw "Build the portable desktop app first: $jlptPortableExecutable"
+if (-not (Test-Path -LiteralPath $jlptPackagedExecutable)) {
+    throw "Build the desktop executable first: $jlptPackagedExecutable"
 }
 
 if (-not $jlptCompiler) {

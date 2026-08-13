@@ -19,6 +19,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.util.SparseIntArray;
 import android.view.Gravity;
+import android.view.Display;
 import android.view.MotionEvent;
 import android.view.VelocityTracker;
 import android.view.View;
@@ -27,6 +28,7 @@ import android.view.ViewConfiguration;
 import android.view.Window;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
+import android.view.WindowManager;
 import android.view.animation.DecelerateInterpolator;
 import android.view.inputmethod.InputMethodManager;
 import android.content.Context;
@@ -215,6 +217,7 @@ public final class MainActivity extends Activity {
         root.setBackgroundColor(paper);
         setContentView(root);
         configureWindow();
+        requestHighRefreshRate();
 
         mainColumn = new LinearLayout(this);
         mainColumn.setOrientation(LinearLayout.VERTICAL);
@@ -3001,6 +3004,20 @@ public final class MainActivity extends Activity {
             }
             decorView.setSystemUiVisibility(flags);
         }
+    }
+
+    private void requestHighRefreshRate() {
+        Display display = getWindowManager().getDefaultDisplay();
+        float highestRefreshRate = display.getRefreshRate();
+        for (Display.Mode mode : display.getSupportedModes()) {
+            highestRefreshRate = Math.max(highestRefreshRate, mode.getRefreshRate());
+        }
+        if (highestRefreshRate <= 0f) {
+            return;
+        }
+        WindowManager.LayoutParams attributes = getWindow().getAttributes();
+        attributes.preferredRefreshRate = highestRefreshRate;
+        getWindow().setAttributes(attributes);
     }
 
     private Button button(String text, boolean active, boolean segmented) {
