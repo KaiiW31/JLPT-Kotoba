@@ -1,6 +1,7 @@
 import bisect
 import csv
 import ctypes
+from ctypes import wintypes
 import json
 import math
 import random
@@ -121,6 +122,8 @@ KANA_NORMALIZE = str.maketrans(
 class JLPTStudyApp(ctk.CTk):
     def __init__(self):
         super().__init__()
+        if sys.platform == "win32":
+            self._deactivate_windows_window_header_manipulation = True
         ctk.set_appearance_mode("System")
         ctk.set_default_color_theme("blue")
         self.display_scale = detect_display_scale(self)
@@ -194,10 +197,9 @@ class JLPTStudyApp(ctk.CTk):
         self.drawer_animation_started_at = None
         self.drawer_animation_start_x = 0.0
         self.drawer_animation_duration = 0.26
-        self.drawer_backdrop_image = None
-        self.drawer_backdrop_cache = None
-        self.drawer_backdrop_cache_key = None
         self.drawer_close_callback = None
+        self.drawer_backdrop_image = None
+        self.drawer_backdrop_refresh_after_id = None
         self.settings_open = False
         self.settings_animation_after_id = None
         self.settings_x = 0.0
@@ -206,6 +208,8 @@ class JLPTStudyApp(ctk.CTk):
         self.settings_animation_started_at = None
         self.settings_animation_duration = 0.26
         self.settings_backdrop_image = None
+        self.animation_frame_ms = 6 if sys.platform == "win32" else 16
+        self.high_resolution_timer_users = 0
 
         self.search_var = ctk.StringVar()
         self.flash_level_var = ctk.StringVar(value="N5")
@@ -246,7 +250,6 @@ class JLPTStudyApp(ctk.CTk):
             command=self.open_drawer,
         )
         self.menu_button.grid(row=0, column=0, sticky="w", padx=(22, 14), pady=13)
-        self.menu_button.bind("<Enter>", self.prepare_drawer_backdrop_cache, add="+")
 
         self.brand_font = ctk.CTkFont(size=25, weight="bold")
         self.brand_label = ctk.CTkLabel(
@@ -268,7 +271,6 @@ class JLPTStudyApp(ctk.CTk):
             command=self.open_settings,
         )
         self.settings_button.grid(row=0, column=2, sticky="e", padx=22, pady=15)
-        self.settings_button.bind("<Enter>", self.prepare_drawer_backdrop_cache, add="+")
 
         self.shell = ctk.CTkFrame(self, fg_color="transparent")
         self.shell.grid(row=1, column=0, sticky="nsew", padx=28, pady=(24, 26))
@@ -469,7 +471,242 @@ class JLPTStudyApp(ctk.CTk):
         self.vocab_view.tkraise()
         self.bind("<Configure>", self.schedule_root_layout_refresh, add="+")
         self.after_idle(self.apply_responsive_layout)
-        self.after(420, self.prepare_drawer_backdrop_cache)
+
+    def create_drawer_backdrop_image(self, capture_hidden=False):
+        try:
+            self.update_idletasks()
+            image = self.capture_app_client() if capture_hidden else self.capture_visible_client()
+            image = ImageEnhance.Brightness(image).enhance(0.64)
+            tint = Image.new("RGB", image.size, theme_color(("#3A151B", "#080508")))
+            image = Image.blend(image, tint, 0.10)
+            return ImageTk.PhotoImage(image)
+        except Exception:
+            return None
+
+    def capture_visible_client(self):
+        if sys.platform == "win32":
+            image = self.capture_app_client(visible=True)
+            if image is not None:
+                return image
+        x = self.winfo_rootx()
+        y = self.winfo_rooty()
+        width = max(1, self.winfo_width())
+        height = max(1, self.winfo_height())
+        return ImageGrab.grab(bbox=(x, y, x + width, y + height)).convert("RGB")
+
+    def capture_app_client(self, visible=False, widget=None):
+        if sys.platform == "win32":
+            user32 = ctypes.windll.user32
+            gdi32 = ctypes.windll.gdi32
+            user32.GetParent.argtypes = [wintypes.HWND]
+            user32.GetParent.restype = wintypes.HWND
+            user32.GetDC.argtypes = [wintypes.HWND]
+            user32.GetDC.restype = wintypes.HDC
+            user32.ReleaseDC.argtypes = [wintypes.HWND, wintypes.HDC]
+            user32.GetClientRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
+            user32.GetClientRect.restype = wintypes.BOOL
+            user32.ClientToScreen.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.POINT)]
+            user32.ClientToScreen.restype = wintypes.BOOL
+            user32.PrintWindow.argtypes = [wintypes.HWND, wintypes.HDC, wintypes.UINT]
+            user32.PrintWindow.restype = wintypes.BOOL
+            gdi32.CreateCompatibleDC.argtypes = [wintypes.HDC]
+            gdi32.CreateCompatibleDC.restype = wintypes.HDC
+            gdi32.CreateCompatibleBitmap.argtypes = [wintypes.HDC, ctypes.c_int, ctypes.c_int]
+            gdi32.CreateCompatibleBitmap.restype = wintypes.HBITMAP
+            gdi32.SelectObject.argtypes = [wintypes.HDC, wintypes.HGDIOBJ]
+            gdi32.SelectObject.restype = wintypes.HGDIOBJ
+            gdi32.BitBlt.argtypes = [
+                wintypes.HDC,
+                ctypes.c_int,
+                ctypes.c_int,
+                ctypes.c_int,
+                ctypes.c_int,
+                wintypes.HDC,
+                ctypes.c_int,
+                ctypes.c_int,
+                wintypes.DWORD,
+            ]
+            gdi32.BitBlt.restype = wintypes.BOOL
+            gdi32.GetDIBits.argtypes = [
+                wintypes.HDC,
+                wintypes.HBITMAP,
+                wintypes.UINT,
+                wintypes.UINT,
+                ctypes.c_void_p,
+                ctypes.c_void_p,
+                wintypes.UINT,
+            ]
+            gdi32.GetDIBits.restype = ctypes.c_int
+            gdi32.DeleteObject.argtypes = [wintypes.HGDIOBJ]
+            gdi32.DeleteDC.argtypes = [wintypes.HDC]
+
+            target_widget = widget or self
+            hwnd = target_widget.winfo_id()
+            client = wintypes.RECT()
+            origin = wintypes.POINT(0, 0)
+            if not user32.GetClientRect(hwnd, ctypes.byref(client)):
+                return None
+            width = max(1, client.right - client.left)
+            height = max(1, client.bottom - client.top)
+            if visible and not user32.ClientToScreen(hwnd, ctypes.byref(origin)):
+                return None
+            source_window = None if visible else hwnd
+            window_dc = user32.GetDC(source_window)
+            memory_dc = gdi32.CreateCompatibleDC(window_dc)
+            bitmap = gdi32.CreateCompatibleBitmap(window_dc, width, height)
+            previous = gdi32.SelectObject(memory_dc, bitmap)
+            try:
+                if visible:
+                    gdi32.BitBlt(memory_dc, 0, 0, width, height, window_dc, origin.x, origin.y, 0x00CC0020)
+                elif not user32.PrintWindow(hwnd, memory_dc, 0x00000003):
+                    gdi32.BitBlt(memory_dc, 0, 0, width, height, window_dc, 0, 0, 0x00CC0020)
+
+                class BitmapInfoHeader(ctypes.Structure):
+                    _fields_ = [
+                        ("biSize", ctypes.c_uint32),
+                        ("biWidth", ctypes.c_int32),
+                        ("biHeight", ctypes.c_int32),
+                        ("biPlanes", ctypes.c_uint16),
+                        ("biBitCount", ctypes.c_uint16),
+                        ("biCompression", ctypes.c_uint32),
+                        ("biSizeImage", ctypes.c_uint32),
+                        ("biXPelsPerMeter", ctypes.c_int32),
+                        ("biYPelsPerMeter", ctypes.c_int32),
+                        ("biClrUsed", ctypes.c_uint32),
+                        ("biClrImportant", ctypes.c_uint32),
+                    ]
+
+                header = BitmapInfoHeader()
+                header.biSize = ctypes.sizeof(BitmapInfoHeader)
+                header.biWidth = width
+                header.biHeight = -height
+                header.biPlanes = 1
+                header.biBitCount = 32
+                header.biCompression = 0
+                buffer = ctypes.create_string_buffer(width * height * 4)
+                copied = gdi32.GetDIBits(
+                    memory_dc,
+                    bitmap,
+                    0,
+                    height,
+                    buffer,
+                    ctypes.byref(header),
+                    0,
+                )
+                if copied:
+                    return Image.frombuffer("RGB", (width, height), buffer, "raw", "BGRX", 0, 1).copy()
+            finally:
+                gdi32.SelectObject(memory_dc, previous)
+                gdi32.DeleteObject(bitmap)
+                gdi32.DeleteDC(memory_dc)
+                user32.ReleaseDC(source_window, window_dc)
+        if widget is not None:
+            return None
+        return None if visible else self.capture_visible_client()
+
+    def create_screen_freeze(self):
+        return self.create_screen_freeze_from_image(self.capture_visible_client())
+
+    def create_screen_freeze_from_image(self, source_image):
+        image = ImageTk.PhotoImage(source_image)
+        cover = tk.Toplevel(self)
+        cover.withdraw()
+        cover.overrideredirect(True)
+        cover.configure(bg="#000000")
+        cover.image = image
+        label = tk.Label(cover, image=image, bd=0, highlightthickness=0)
+        label.pack(fill="both", expand=True)
+        cover.geometry(
+            f"{max(1, self.winfo_width())}x{max(1, self.winfo_height())}"
+            f"{self.winfo_rootx():+d}{self.winfo_rooty():+d}"
+        )
+        try:
+            cover.transient(self)
+        except tk.TclError:
+            pass
+        cover.deiconify()
+        cover.lift(self)
+        cover.update_idletasks()
+        return cover
+
+    def create_cached_drawer_screen_freeze(self):
+        if self.drawer_backdrop_image is None:
+            return self.create_screen_freeze()
+        try:
+            image = ImageTk.getimage(self.drawer_backdrop_image).convert("RGB")
+            panel = self.capture_app_client(widget=self.drawer_panel)
+            if panel is None:
+                return self.create_screen_freeze()
+            physical_scale = image.width / max(1, self.winfo_width())
+            panel_x = round(self.drawer_x * physical_scale)
+            image.paste(panel, (panel_x, 0))
+            return self.create_screen_freeze_from_image(image)
+        except Exception:
+            return self.create_screen_freeze()
+
+    def apply_backdrop_image(self, label, image):
+        if image is not None:
+            label.configure(image=image)
+        else:
+            label.configure(image="", bg=theme_color(("#2A1117", "#080508")))
+
+    def refresh_open_drawer_backdrop(self):
+        if not self.drawer_scrim.place_info():
+            return
+        cover = None
+        try:
+            cover = self.create_cached_drawer_screen_freeze()
+            panel_x = round(self.drawer_x)
+            self.drawer_scrim.place_forget()
+            self.settle_current_view_for_backdrop_capture()
+            backdrop = self.create_drawer_backdrop_image(capture_hidden=True)
+            if backdrop is None:
+                return
+            self.drawer_backdrop_image = backdrop
+            self.apply_backdrop_image(self.drawer_backdrop_label, self.drawer_backdrop_image)
+            self.drawer_scrim.place(relx=0, rely=0, relwidth=1, relheight=1)
+            self.drawer_panel.place_configure(x=panel_x)
+            self.drawer_scrim.lift()
+            try:
+                self.drawer_scrim.grab_set()
+            except tk.TclError:
+                pass
+            self.drawer_scrim.focus_set()
+            self.update_idletasks()
+            self.drawer_scrim.update()
+            self.force_windows_redraw()
+            if sys.platform == "win32":
+                try:
+                    ctypes.windll.dwmapi.DwmFlush()
+                except Exception:
+                    pass
+        finally:
+            if cover is not None:
+                try:
+                    cover.destroy()
+                except tk.TclError:
+                    pass
+
+    def settle_current_view_for_backdrop_capture(self):
+        # Switching study sections changes the table schema, title, search row,
+        # responsive sizing, and virtualized canvas in one event.  Capturing the
+        # root before Tk has processed that full layout produces a torn image
+        # (old drawer controls mixed with a partially blank new page).  Finish
+        # the pending responsive pass while the old frame is still covering the
+        # window, then capture one complete replacement frame.
+        if self.root_configure_after_id is not None:
+            try:
+                self.after_cancel(self.root_configure_after_id)
+            except tk.TclError:
+                pass
+            self.root_configure_after_id = None
+        self.refresh_root_layout()
+        self.update()
+        if sys.platform == "win32":
+            try:
+                ctypes.windll.dwmapi.DwmFlush()
+            except Exception:
+                pass
 
     def _build_drawer(self):
         self.drawer_width = 344
@@ -610,19 +847,14 @@ class JLPTStudyApp(ctk.CTk):
             scale=self.kana_rail_scale(),
         )
         self.kana_rail_widget.grid(row=0, column=0, sticky="nsew", padx=6, pady=8)
-        self.drawer_scrim.bind("<Escape>", lambda _event: self.close_drawer())
         self.drawer_x = -self.drawer_width
         self.drawer_target_x = self.drawer_x
+        self.drawer_scrim.bind("<Escape>", lambda _event: self.close_drawer())
         self.drawer_scrim.place_forget()
 
     def _build_settings_drawer(self):
         self.settings_width = 344
-        self.settings_scrim = tk.Frame(
-            self,
-            bg=theme_color(("#2A1117", "#080508")),
-            bd=0,
-            highlightthickness=0,
-        )
+        self.settings_scrim = tk.Frame(self, bg=theme_color(("#2A1117", "#080508")), bd=0, highlightthickness=0)
         self.settings_backdrop_label = tk.Label(
             self.settings_scrim,
             bg=theme_color(("#2A1117", "#080508")),
@@ -686,18 +918,8 @@ class JLPTStudyApp(ctk.CTk):
         if self.settings_open and self.settings_animation_after_id is None:
             return
         if not self.settings_scrim.place_info():
-            cache_key = self.drawer_backdrop_key()
-            if self.drawer_backdrop_cache_key == cache_key and self.drawer_backdrop_cache is not None:
-                self.settings_backdrop_image = self.drawer_backdrop_cache
-            else:
-                self.settings_backdrop_image = self.create_drawer_backdrop_image()
-            if self.settings_backdrop_image is not None:
-                self.settings_backdrop_label.configure(image=self.settings_backdrop_image)
-            else:
-                self.settings_backdrop_label.configure(
-                    image="",
-                    bg=theme_color(("#2A1117", "#080508")),
-                )
+            self.settings_backdrop_image = self.create_drawer_backdrop_image()
+            self.apply_backdrop_image(self.settings_backdrop_label, self.settings_backdrop_image)
             self.settings_scrim.place(relx=0, rely=0, relwidth=1, relheight=1)
             self.settings_scrim.lift()
             self.settings_x = float(self.winfo_width())
@@ -721,51 +943,30 @@ class JLPTStudyApp(ctk.CTk):
         self.close_settings()
         self.after(280, callback)
 
-    def refresh_open_settings_backdrop(self):
-        if not self.settings_open or not self.settings_scrim.place_info():
+    def begin_high_resolution_animation(self):
+        if sys.platform != "win32":
             return
-        panel_x = round(self.settings_x)
-        self.settings_scrim.place_forget()
-        self.update_idletasks()
-        self.drawer_backdrop_cache = None
-        self.drawer_backdrop_cache_key = None
-        self.settings_backdrop_image = self.create_drawer_backdrop_image()
-        if self.settings_backdrop_image is not None:
-            self.settings_backdrop_label.configure(image=self.settings_backdrop_image)
-        else:
-            self.settings_backdrop_label.configure(
-                image="",
-                bg=theme_color(("#2A1117", "#080508")),
-            )
-        self.settings_scrim.place(relx=0, rely=0, relwidth=1, relheight=1)
-        self.settings_panel.place_configure(x=panel_x)
-        self.settings_scrim.lift()
-        self.settings_scrim.focus_set()
+        if self.high_resolution_timer_users == 0:
+            try:
+                ctypes.windll.winmm.timeBeginPeriod(1)
+            except Exception:
+                return
+        self.high_resolution_timer_users += 1
 
-    def refresh_open_drawer_backdrop(self):
-        if not self.drawer_open or not self.drawer_scrim.place_info():
+    def end_high_resolution_animation(self):
+        if sys.platform != "win32" or self.high_resolution_timer_users <= 0:
             return
-        panel_x = round(self.drawer_x)
-        self.drawer_scrim.place_forget()
-        self.update_idletasks()
-        self.drawer_backdrop_cache = None
-        self.drawer_backdrop_cache_key = None
-        self.drawer_backdrop_image = self.create_drawer_backdrop_image()
-        if self.drawer_backdrop_image is not None:
-            self.drawer_backdrop_label.configure(image=self.drawer_backdrop_image)
-        else:
-            self.drawer_backdrop_label.configure(
-                image="",
-                bg=theme_color(("#2A1117", "#080508")),
-            )
-        self.drawer_scrim.place(relx=0, rely=0, relwidth=1, relheight=1)
-        self.drawer_panel.place_configure(x=panel_x)
-        self.drawer_scrim.lift()
-        try:
-            self.drawer_scrim.grab_set()
-        except tk.TclError:
-            pass
-        self.drawer_scrim.focus_set()
+        self.high_resolution_timer_users -= 1
+        if self.high_resolution_timer_users == 0:
+            try:
+                ctypes.windll.winmm.timeEndPeriod(1)
+            except Exception:
+                pass
+
+    def destroy(self):
+        while getattr(self, "high_resolution_timer_users", 0) > 0:
+            self.end_high_resolution_animation()
+        super().destroy()
 
     def start_settings_animation(self, target_x):
         self.settings_target_x = float(target_x)
@@ -774,6 +975,7 @@ class JLPTStudyApp(ctk.CTk):
         self.settings_animation_duration = max(0.12, 0.26 * distance_fraction)
         self.settings_animation_started_at = time.perf_counter()
         if self.settings_animation_after_id is None:
+            self.begin_high_resolution_animation()
             self.settings_animation_after_id = self.after(0, self.animate_settings)
 
     def animate_settings(self):
@@ -781,11 +983,17 @@ class JLPTStudyApp(ctk.CTk):
         progress = min(1.0, elapsed / max(0.01, self.settings_animation_duration))
         eased = 1.0 - ((1.0 - progress) ** 2)
         self.settings_x = self.settings_animation_start_x + ((self.settings_target_x - self.settings_animation_start_x) * eased)
-        self.settings_panel.place_configure(x=round(self.settings_x))
+        try:
+            self.settings_panel.place_configure(x=round(self.settings_x))
+        except tk.TclError:
+            self.settings_animation_after_id = None
+            self.end_high_resolution_animation()
+            return
         if progress < 1.0:
-            self.settings_animation_after_id = self.after(15, self.animate_settings)
+            self.settings_animation_after_id = self.after(self.animation_frame_ms, self.animate_settings)
             return
         self.settings_animation_after_id = None
+        self.end_high_resolution_animation()
         self.settings_x = self.settings_target_x
         self.settings_panel.place_configure(x=round(self.settings_x))
         if not self.settings_open:
@@ -834,58 +1042,14 @@ class JLPTStudyApp(ctk.CTk):
         n1_enabled = base_view in {"Grammar", "Kanji"}
         self.level_buttons["N1"].configure(state="normal" if n1_enabled else "disabled")
 
-    def drawer_backdrop_key(self):
-        return (
-            ctk.get_appearance_mode(),
-            self.winfo_width(),
-            self.winfo_height(),
-            self.current_view,
-            self.current_level,
-            self.flash_level_var.get(),
-        )
-
-    def prepare_drawer_backdrop_cache(self, _event=None):
-        if self.drawer_open or self.drawer_animation_after_id is not None:
-            return
-        cache_key = self.drawer_backdrop_key()
-        if self.drawer_backdrop_cache_key == cache_key and self.drawer_backdrop_cache is not None:
-            return
-        self.drawer_backdrop_cache = self.create_drawer_backdrop_image()
-        self.drawer_backdrop_cache_key = cache_key if self.drawer_backdrop_cache is not None else None
-
-    def create_drawer_backdrop_image(self):
-        try:
-            self.update_idletasks()
-            x = self.winfo_rootx()
-            y = self.winfo_rooty()
-            width = max(1, self.winfo_width())
-            height = max(1, self.winfo_height())
-            image = ImageGrab.grab(bbox=(x, y, x + width, y + height)).convert("RGB")
-            image = ImageEnhance.Brightness(image).enhance(0.55)
-            tint = Image.new("RGB", image.size, theme_color(("#3A151B", "#080508")))
-            image = Image.blend(image, tint, 0.16)
-            return ImageTk.PhotoImage(image)
-        except Exception:
-            return None
-
     def open_drawer(self):
         if not hasattr(self, "drawer_scrim"):
             return
         if self.drawer_open and self.drawer_animation_after_id is None:
             return
         if not self.drawer_scrim.place_info():
-            cache_key = self.drawer_backdrop_key()
-            if self.drawer_backdrop_cache_key == cache_key and self.drawer_backdrop_cache is not None:
-                self.drawer_backdrop_image = self.drawer_backdrop_cache
-            else:
-                self.drawer_backdrop_image = self.create_drawer_backdrop_image()
-            if self.drawer_backdrop_image is not None:
-                self.drawer_backdrop_label.configure(image=self.drawer_backdrop_image)
-            else:
-                self.drawer_backdrop_label.configure(
-                    image="",
-                    bg=theme_color(("#2A1117", "#080508")),
-                )
+            self.drawer_backdrop_image = self.create_drawer_backdrop_image()
+            self.apply_backdrop_image(self.drawer_backdrop_label, self.drawer_backdrop_image)
             self.drawer_scrim.place(relx=0, rely=0, relwidth=1, relheight=1)
             self.drawer_scrim.lift()
             self.drawer_x = -self.drawer_width
@@ -899,7 +1063,6 @@ class JLPTStudyApp(ctk.CTk):
         self.sync_drawer_content()
         active_level = self.flash_level_var.get() if self.current_view in {"Flashcards", "Kanji Flashcards"} else self.current_level
         self.set_level_buttons(active_level, force=True)
-        self.refresh_open_drawer_backdrop()
         self.drawer_scrim.focus_set()
         self.drawer_open = True
         self.start_drawer_animation(0)
@@ -908,6 +1071,7 @@ class JLPTStudyApp(ctk.CTk):
     def close_drawer(self, after=None):
         if after is not None:
             self.drawer_close_callback = after
+        self.cancel_drawer_backdrop_refresh()
         if not hasattr(self, "drawer_scrim") or not self.drawer_scrim.place_info():
             callback = self.drawer_close_callback
             self.drawer_close_callback = None
@@ -927,6 +1091,7 @@ class JLPTStudyApp(ctk.CTk):
         self.drawer_animation_duration = max(0.12, 0.26 * distance_fraction)
         self.drawer_animation_started_at = time.perf_counter()
         if self.drawer_animation_after_id is None:
+            self.begin_high_resolution_animation()
             self.drawer_animation_after_id = self.after(0, self.animate_drawer)
 
     def animate_drawer(self):
@@ -941,12 +1106,14 @@ class JLPTStudyApp(ctk.CTk):
             self.drawer_panel.place_configure(x=round(self.drawer_x))
         except tk.TclError:
             self.drawer_animation_after_id = None
+            self.end_high_resolution_animation()
             return
 
         if not finished:
-            self.drawer_animation_after_id = self.after(15, self.animate_drawer)
+            self.drawer_animation_after_id = self.after(self.animation_frame_ms, self.animate_drawer)
             return
         self.drawer_animation_after_id = None
+        self.end_high_resolution_animation()
         self.drawer_x = self.drawer_target_x
         self.drawer_animation_started_at = None
         self.drawer_panel.place_configure(x=round(self.drawer_x))
@@ -958,22 +1125,44 @@ class JLPTStudyApp(ctk.CTk):
             self.drawer_scrim.place_forget()
             self.drawer_backdrop_label.configure(image="")
             self.drawer_backdrop_image = None
-            self.drawer_backdrop_cache = None
-            self.drawer_backdrop_cache_key = None
-            self.after(220, self.prepare_drawer_backdrop_cache)
             callback = self.drawer_close_callback
             self.drawer_close_callback = None
             if callback is not None:
                 self.after_idle(callback)
 
     def select_drawer_view(self, view):
-        if view != self.current_view:
-            self.search_var.set("")
+        if view == self.current_view:
+            return
+        self.search_var.set("")
         self.switch_view(view)
         self.set_nav_buttons(self.current_view, force=True)
         self.sync_drawer_content()
         active_level = self.flash_level_var.get() if self.current_view in {"Flashcards", "Kanji Flashcards"} else self.current_level
         self.set_level_buttons(active_level, force=True)
+        self.schedule_open_drawer_backdrop_refresh()
+
+    def schedule_open_drawer_backdrop_refresh(self):
+        self.cancel_drawer_backdrop_refresh()
+        if not self.drawer_scrim.place_info():
+            return
+        # Let Tk finish the new title, controls, responsive pass, and virtual
+        # table before replacing the static dimmed frame. Rapid section clicks
+        # cancel this job, so only the final requested section is captured.
+        self.drawer_backdrop_refresh_after_id = self.after(16, self.run_scheduled_drawer_backdrop_refresh)
+
+    def cancel_drawer_backdrop_refresh(self):
+        if self.drawer_backdrop_refresh_after_id is None:
+            return
+        try:
+            self.after_cancel(self.drawer_backdrop_refresh_after_id)
+        except tk.TclError:
+            pass
+        self.drawer_backdrop_refresh_after_id = None
+
+    def run_scheduled_drawer_backdrop_refresh(self):
+        self.drawer_backdrop_refresh_after_id = None
+        if self.drawer_scrim.place_info():
+            self.refresh_open_drawer_backdrop()
 
     def select_drawer_level(self, level):
         active_level = self.flash_level_var.get() if self.current_view in {"Flashcards", "Kanji Flashcards"} else self.current_level
@@ -1400,6 +1589,9 @@ class JLPTStudyApp(ctk.CTk):
         if hasattr(self, "kana_rail_widget"):
             self.kana_rail_widget.set_scale(self.kana_rail_scale())
         self.sync_current_view_layout()
+        if self.settings_open and self.settings_animation_after_id is None:
+            self.settings_x = max(0, self.winfo_width() - self.settings_width)
+            self.settings_panel.place_configure(x=round(self.settings_x))
 
     def apply_responsive_layout(self):
         if not hasattr(self, "header"):
@@ -1796,69 +1988,124 @@ class JLPTStudyApp(ctk.CTk):
 
     def toggle_theme(self):
         next_mode = "Light" if ctk.get_appearance_mode() == "Dark" else "Dark"
-        ctk.set_appearance_mode(next_mode)
-        if hasattr(self, "settings_theme_button"):
-            self.settings_theme_button.configure(text=self.theme_action_text())
-        self.draw_search_icon()
-        self.draw_import_icon()
-        self.update_vocab_edit_buttons()
-        self._configure_tree_style()
-        if hasattr(self, "kana_rail_widget"):
-            self.kana_rail_widget.refresh_theme()
-        self.update_flash_rail_buttons(force=True)
-        self.apply_flashcard_style()
-        self.set_flash_save_status(self.flash_save_status_var.get())
-        if hasattr(self, "vocab_table"):
-            self.vocab_table.refresh_theme()
-        self.refresh_open_settings_backdrop()
+        cover = None
+        settings_visible = bool(self.settings_scrim.place_info())
+        drawer_visible = bool(self.drawer_scrim.place_info())
+        settings_x = round(self.settings_x)
+        drawer_x = round(self.drawer_x)
+        try:
+            cover = self.create_screen_freeze()
+            if settings_visible:
+                self.settings_scrim.place_forget()
+            if drawer_visible:
+                self.drawer_scrim.place_forget()
+
+            ctk.set_appearance_mode(next_mode)
+            self.set_windows_titlebar_mode(next_mode)
+            if hasattr(self, "settings_theme_button"):
+                self.settings_theme_button.configure(text=self.theme_action_text())
+            self.draw_search_icon()
+            self.draw_import_icon()
+            self.update_vocab_edit_buttons()
+            self._configure_tree_style()
+            if hasattr(self, "kana_rail_widget"):
+                self.kana_rail_widget.refresh_theme()
+            self.update_flash_rail_buttons(force=True)
+            self.apply_flashcard_style()
+            self.set_flash_save_status(self.flash_save_status_var.get())
+            if hasattr(self, "vocab_table"):
+                self.vocab_table.refresh_theme()
+            self.update_idletasks()
+
+            if settings_visible:
+                self.settings_backdrop_image = self.create_drawer_backdrop_image(capture_hidden=True)
+                self.apply_backdrop_image(self.settings_backdrop_label, self.settings_backdrop_image)
+                self.settings_scrim.place(relx=0, rely=0, relwidth=1, relheight=1)
+                self.settings_panel.place_configure(x=settings_x)
+                self.settings_scrim.lift()
+                self.settings_scrim.focus_set()
+            elif drawer_visible:
+                self.drawer_backdrop_image = self.create_drawer_backdrop_image(capture_hidden=True)
+                self.apply_backdrop_image(self.drawer_backdrop_label, self.drawer_backdrop_image)
+                self.drawer_scrim.place(relx=0, rely=0, relwidth=1, relheight=1)
+                self.drawer_panel.place_configure(x=drawer_x)
+                self.drawer_scrim.lift()
+                try:
+                    self.drawer_scrim.grab_set()
+                except tk.TclError:
+                    pass
+                self.drawer_scrim.focus_set()
+            self.update_idletasks()
+            if settings_visible:
+                self.settings_scrim.update()
+            elif drawer_visible:
+                self.drawer_scrim.update()
+            self.force_windows_redraw()
+        finally:
+            if cover is not None:
+                try:
+                    cover.destroy()
+                except tk.TclError:
+                    pass
+
+    def force_windows_redraw(self):
+        if sys.platform != "win32":
+            return
+        try:
+            user32 = ctypes.windll.user32
+            user32.GetParent.argtypes = [wintypes.HWND]
+            user32.GetParent.restype = wintypes.HWND
+            user32.RedrawWindow.argtypes = [wintypes.HWND, ctypes.c_void_p, ctypes.c_void_p, wintypes.UINT]
+            user32.RedrawWindow.restype = wintypes.BOOL
+            hwnd = user32.GetParent(self.winfo_id())
+            redraw_flags = 0x0001 | 0x0080 | 0x0100 | 0x0400
+            user32.RedrawWindow(hwnd, None, None, redraw_flags)
+        except Exception:
+            pass
+
+    def set_windows_titlebar_mode(self, mode):
+        if sys.platform != "win32":
+            return
+        try:
+            hwnd = ctypes.windll.user32.GetParent(self.winfo_id())
+            enabled = ctypes.c_int(1 if str(mode).lower() == "dark" else 0)
+            for attribute in (20, 19):
+                result = ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                    ctypes.c_void_p(hwnd),
+                    ctypes.c_uint(attribute),
+                    ctypes.byref(enabled),
+                    ctypes.sizeof(enabled),
+                )
+                if result == 0:
+                    break
+        except Exception:
+            pass
 
     def switch_view(self, view):
         if view == self.current_view:
             self.sync_current_view_layout()
             return
-        paint_locked = self.lock_window_paint()
-        try:
-            self.current_view = view
-            self.set_nav_buttons(view)
-            if view == "Vocabulary":
-                if self.current_level == "N1":
-                    self.current_level = "N2"
-                self.show_vocabulary(self.current_level)
-            elif view in {"Grammar", "Kanji"}:
-                self.show_reference(view, self.current_level)
-            else:
-                self.flash_source = "Vocabulary"
-                if self.flash_level_var.get() == "N1":
-                    self.flash_level_var.set("N2")
-                self.prepare_vocabulary_for_view_switch()
-                self.show_flash_header_actions()
-                level = self.flash_level_var.get()
-                self.current_level = level
-                self.title_label.configure(text=f"JLPT {level} Vocabulary Flashcards")
-                self.subtitle_label.configure(text="Tap the card to reveal and continue.")
-                self.count_var.set("")
-                self.reset_flashcards()
-                self.flash_view.tkraise()
-            if paint_locked:
-                self.update_idletasks()
-        finally:
-            self.unlock_window_paint(paint_locked)
-
-    def lock_window_paint(self):
-        if sys.platform != "win32":
-            return False
-        try:
-            return bool(ctypes.windll.user32.LockWindowUpdate(ctypes.c_void_p(self.winfo_id())))
-        except Exception:
-            return False
-
-    def unlock_window_paint(self, locked):
-        if not locked:
-            return
-        try:
-            ctypes.windll.user32.LockWindowUpdate(ctypes.c_void_p(0))
-        except Exception:
-            pass
+        self.current_view = view
+        self.set_nav_buttons(view)
+        if view == "Vocabulary":
+            if self.current_level == "N1":
+                self.current_level = "N2"
+            self.show_vocabulary(self.current_level)
+        elif view in {"Grammar", "Kanji"}:
+            self.show_reference(view, self.current_level)
+        else:
+            self.flash_source = "Vocabulary"
+            if self.flash_level_var.get() == "N1":
+                self.flash_level_var.set("N2")
+            self.prepare_vocabulary_for_view_switch()
+            self.show_flash_header_actions()
+            level = self.flash_level_var.get()
+            self.current_level = level
+            self.title_label.configure(text=f"JLPT {level} Vocabulary Flashcards")
+            self.subtitle_label.configure(text="Tap the card to reveal and continue.")
+            self.count_var.set("")
+            self.reset_flashcards()
+            self.flash_view.tkraise()
 
     def show_vocabulary(self, level):
         if level == "N1":

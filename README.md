@@ -13,7 +13,6 @@ The bundled lists are reproduced from JLPT Sensei and work offline after install
 ## Downloads
 
 - `JLPT Kotoba Setup.exe` — recommended Windows installer; registers **JLPT Kotoba** in Installed apps and includes an uninstaller
-- `JLPT Kotoba.exe` — portable Windows build; runs directly but does not appear in Installed apps
 - `JLPT Kotoba.apk` — installable Android build
 
 Both apps work locally. No account, internet permission, analytics, or cloud storage is used.
@@ -76,7 +75,7 @@ python -m pip install -r requirements.txt
 python app.py
 ```
 
-Run `desktop/build_exe.bat` to create the portable Windows executable. Then run `desktop/build_installer.ps1` to create `JLPT Kotoba Setup.exe` with Inno Setup 6. The installer uses a per-user Local AppData location, adds Start Menu and optional desktop shortcuts, and registers a standard uninstaller in Windows Settings.
+Run `desktop/build_exe.bat` to create the executable used internally by the installer. Then run `desktop/build_installer.ps1` to create the user-facing `JLPT Kotoba Setup.exe` with Inno Setup 6. The installer uses a per-user Local AppData location, adds Start Menu and optional desktop shortcuts, and registers a standard uninstaller in Windows Settings.
 
 Windows Smart App Control may still warn about or block unsigned locally built executables and installers. Public distribution without that warning requires a trusted code-signing certificate.
 

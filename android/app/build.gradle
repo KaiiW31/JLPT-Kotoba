@@ -10,8 +10,8 @@ android {
         applicationId "com.kai.jlptkotoba"
         minSdk 26
         targetSdk 36
-        versionCode 14
-        versionName "1.4.2"
+        versionCode 16
+        versionName "1.4.4"
     }
 
     buildTypes {
