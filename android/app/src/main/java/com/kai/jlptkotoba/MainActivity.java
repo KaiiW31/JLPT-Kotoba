@@ -108,6 +108,7 @@ public final class MainActivity extends Activity {
     private View drawerScrim;
     private LinearLayout drawer;
     private ScrollView drawerScroll;
+    private LinearLayout drawerMenuContent;
     private boolean drawerOpen;
     private boolean drawerGestureTracking;
     private boolean drawerGestureDragging;
@@ -306,6 +307,7 @@ public final class MainActivity extends Activity {
         drawer.setOrientation(LinearLayout.VERTICAL);
         drawer.setBackgroundColor(panel);
         drawer.setElevation(dp(14));
+        drawer.setClickable(true);
 
         int drawerWidth = Math.min(dp(340), Math.round(getResources().getDisplayMetrics().widthPixels * 0.86f));
         FrameLayout.LayoutParams drawerParams = new FrameLayout.LayoutParams(
@@ -332,10 +334,10 @@ public final class MainActivity extends Activity {
         drawerScroll = scroll;
         scroll.setFillViewport(true);
         scroll.setClipToPadding(false);
-        LinearLayout menuContent = new LinearLayout(this);
-        menuContent.setOrientation(LinearLayout.VERTICAL);
-        menuContent.setPadding(dp(14), dp(4), dp(14), dp(24));
-        scroll.addView(menuContent, new ScrollView.LayoutParams(
+        drawerMenuContent = new LinearLayout(this);
+        drawerMenuContent.setOrientation(LinearLayout.VERTICAL);
+        drawerMenuContent.setPadding(dp(14), dp(4), dp(14), dp(24));
+        scroll.addView(drawerMenuContent, new ScrollView.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
         ));
@@ -345,7 +347,22 @@ public final class MainActivity extends Activity {
                 1
         ));
 
-        menuContent.addView(drawerSectionLabel("STUDY"));
+        populateDrawerMenuContent();
+
+        drawer.setTranslationX(-drawerWidth);
+        drawer.setVisibility(View.INVISIBLE);
+    }
+
+    private void populateDrawerMenuContent() {
+        if (drawerMenuContent == null) {
+            return;
+        }
+        drawerMenuContent.removeAllViews();
+        drawerGroupChildren.clear();
+        drawerGroupChevrons.clear();
+        drawerKanaButtons.clear();
+
+        drawerMenuContent.addView(drawerSectionLabel("STUDY"));
         LinearLayout modes = new LinearLayout(this);
         modes.setOrientation(LinearLayout.HORIZONTAL);
         String baseMode = baseStudyMode(currentMode);
@@ -358,12 +375,12 @@ public final class MainActivity extends Activity {
         Button kanji = button("Kanji", "kanji".equals(baseMode), false);
         kanji.setOnClickListener(view -> selectBaseModeKeepingDrawerOpen("kanji"));
         modes.addView(kanji, weightedButtonParams(dp(4), 0));
-        menuContent.addView(modes);
+        drawerMenuContent.addView(modes);
 
         String studyLabel = "grammar".equals(baseMode) ? "Quiz" : "Flashcards";
         Button study = button(studyLabel, isStudyMode(currentMode), false);
         study.setOnClickListener(view -> closeDrawer(this::selectContextStudy));
-        menuContent.addView(study, drawerItemParams(dp(8)));
+        drawerMenuContent.addView(study, drawerItemParams(dp(8)));
 
         LinearLayout levels = new LinearLayout(this);
         levels.setOrientation(LinearLayout.HORIZONTAL);
@@ -372,7 +389,7 @@ public final class MainActivity extends Activity {
                 dp(46)
         );
         levelsParams.setMargins(0, dp(8), 0, 0);
-        menuContent.addView(levels, levelsParams);
+        drawerMenuContent.addView(levels, levelsParams);
         for (String level : LEVELS) {
             Button item = button(level, level.equals(currentLevel), false);
             boolean levelAvailable = !"N1".equals(level)
@@ -387,71 +404,68 @@ public final class MainActivity extends Activity {
         }
 
         if (!isStudyMode(currentMode)) {
-            menuContent.addView(drawerSectionLabel("BROWSE BY KANA"));
+            drawerMenuContent.addView(drawerSectionLabel("BROWSE BY KANA"));
 
             Set<String> available = availableKana();
             for (String[] kanaRow : KANA_ROWS) {
-            String groupKana = kanaRow[0];
-            boolean rowAvailable = false;
-            for (String kana : kanaRow) {
-                rowAvailable |= available.contains(kana);
-            }
-
-            LinearLayout group = new LinearLayout(this);
-            group.setOrientation(LinearLayout.HORIZONTAL);
-            group.setGravity(Gravity.CENTER_VERTICAL);
-            group.setPadding(dp(14), 0, dp(10), 0);
-            group.setBackground(roundedBackground(panel, line, 9));
-            group.setAlpha(rowAvailable ? 1f : 0.42f);
-            group.setEnabled(rowAvailable);
-            group.setContentDescription(groupKana + " row");
-
-            TextView groupLabel = label(groupKana + " row", 14, ink, Typeface.BOLD);
-            group.addView(groupLabel, new LinearLayout.LayoutParams(0, dp(44), 1));
-
-            ImageView chevron = new ImageView(this);
-            chevron.setImageResource(R.drawable.ic_chevron_down);
-            chevron.setColorFilter(ink);
-            chevron.setRotation(expandedKanaGroups.contains(groupKana) ? 180f : 0f);
-            group.addView(chevron, new LinearLayout.LayoutParams(dp(28), dp(28)));
-            menuContent.addView(group, drawerItemParams(dp(6)));
-
-            LinearLayout children = new LinearLayout(this);
-            children.setOrientation(LinearLayout.VERTICAL);
-            children.setPadding(dp(12), 0, 0, 0);
-            for (String kana : kanaRow) {
-                boolean childAvailable = available.contains(kana);
-                Button child = drawerButton(kana + "     " + kanaRomaji(kana), childAvailable);
-                child.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
-                child.setTypeface(Typeface.DEFAULT, kana.equals(activeKana) ? Typeface.BOLD : Typeface.NORMAL);
-                if (kana.equals(activeKana)) {
-                    child.setBackground(roundedBackground(accent, accent, 9));
-                    child.setTextColor(Color.rgb(255, 247, 237));
+                String groupKana = kanaRow[0];
+                boolean rowAvailable = false;
+                for (String kana : kanaRow) {
+                    rowAvailable |= available.contains(kana);
                 }
-                child.setOnClickListener(view -> {
-                    if (childAvailable) {
-                        closeDrawer(() -> jumpToKana(kana));
+
+                LinearLayout group = new LinearLayout(this);
+                group.setOrientation(LinearLayout.HORIZONTAL);
+                group.setGravity(Gravity.CENTER_VERTICAL);
+                group.setPadding(dp(14), 0, dp(10), 0);
+                group.setBackground(roundedBackground(panel, line, 9));
+                group.setAlpha(rowAvailable ? 1f : 0.42f);
+                group.setEnabled(rowAvailable);
+                group.setContentDescription(groupKana + " row");
+
+                TextView groupLabel = label(groupKana + " row", 14, ink, Typeface.BOLD);
+                group.addView(groupLabel, new LinearLayout.LayoutParams(0, dp(44), 1));
+
+                ImageView chevron = new ImageView(this);
+                chevron.setImageResource(R.drawable.ic_chevron_down);
+                chevron.setColorFilter(ink);
+                chevron.setRotation(expandedKanaGroups.contains(groupKana) ? 180f : 0f);
+                group.addView(chevron, new LinearLayout.LayoutParams(dp(28), dp(28)));
+                drawerMenuContent.addView(group, drawerItemParams(dp(6)));
+
+                LinearLayout children = new LinearLayout(this);
+                children.setOrientation(LinearLayout.VERTICAL);
+                children.setPadding(dp(12), 0, 0, 0);
+                for (String kana : kanaRow) {
+                    boolean childAvailable = available.contains(kana);
+                    Button child = drawerButton(kana + "     " + kanaRomaji(kana), childAvailable);
+                    child.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
+                    child.setTypeface(Typeface.DEFAULT, kana.equals(activeKana) ? Typeface.BOLD : Typeface.NORMAL);
+                    if (kana.equals(activeKana)) {
+                        child.setBackground(roundedBackground(accent, accent, 9));
+                        child.setTextColor(Color.rgb(255, 247, 237));
+                    }
+                    child.setOnClickListener(view -> {
+                        if (childAvailable) {
+                            closeDrawer(() -> jumpToKana(kana));
+                        }
+                    });
+                    drawerKanaButtons.put(kana, child);
+                    children.addView(child, drawerItemParams(dp(4)));
+                }
+                children.setVisibility(expandedKanaGroups.contains(groupKana) ? View.VISIBLE : View.GONE);
+                drawerMenuContent.addView(children);
+                drawerGroupChildren.put(groupKana, children);
+                drawerGroupChevrons.put(groupKana, chevron);
+
+                boolean finalRowAvailable = rowAvailable;
+                group.setOnClickListener(view -> {
+                    if (finalRowAvailable) {
+                        toggleKanaGroup(groupKana, chevron, children);
                     }
                 });
-                drawerKanaButtons.put(kana, child);
-                children.addView(child, drawerItemParams(dp(4)));
-            }
-            children.setVisibility(expandedKanaGroups.contains(groupKana) ? View.VISIBLE : View.GONE);
-            menuContent.addView(children);
-            drawerGroupChildren.put(groupKana, children);
-            drawerGroupChevrons.put(groupKana, chevron);
-
-            boolean finalRowAvailable = rowAvailable;
-            group.setOnClickListener(view -> {
-                if (finalRowAvailable) {
-                    toggleKanaGroup(groupKana, chevron, children);
-                }
-            });
             }
         }
-
-        drawer.setTranslationX(-drawerWidth);
-        drawer.setVisibility(View.INVISIBLE);
     }
 
     private void buildSettingsLayer() {
@@ -469,6 +483,7 @@ public final class MainActivity extends Activity {
         settingsDrawer.setOrientation(LinearLayout.VERTICAL);
         settingsDrawer.setBackgroundColor(panel);
         settingsDrawer.setElevation(dp(14));
+        settingsDrawer.setClickable(true);
         int width = Math.min(dp(340), Math.round(getResources().getDisplayMetrics().widthPixels * 0.86f));
         root.addView(settingsDrawer, new FrameLayout.LayoutParams(
                 width,
@@ -498,12 +513,10 @@ public final class MainActivity extends Activity {
             darkMode = !darkMode;
             preferences.edit().putBoolean(PREF_DARK_MODE, darkMode).apply();
             buildInterface();
-            settingsDrawer.post(() -> {
-                showSettingsLayer();
-                settingsDrawer.setTranslationX(0f);
-                settingsScrim.setAlpha(1f);
-                settingsOpen = true;
-            });
+            showSettingsLayer();
+            settingsDrawer.setTranslationX(0f);
+            settingsScrim.setAlpha(1f);
+            settingsOpen = true;
         });
         body.addView(theme, drawerItemParams(0));
         scroll.addView(body, new ScrollView.LayoutParams(
@@ -555,11 +568,13 @@ public final class MainActivity extends Activity {
                 .alpha(open ? 1f : 0f)
                 .setDuration(duration)
                 .setInterpolator(new DecelerateInterpolator())
+                .withLayer()
                 .start();
         settingsDrawer.animate()
                 .translationX(target)
                 .setDuration(duration)
                 .setInterpolator(new DecelerateInterpolator())
+                .withLayer()
                 .withEndAction(() -> {
                     if (!open) {
                         settingsDrawer.setVisibility(View.INVISIBLE);
@@ -762,11 +777,13 @@ public final class MainActivity extends Activity {
                 .alpha(open ? 1f : 0f)
                 .setDuration(duration)
                 .setInterpolator(new DecelerateInterpolator())
+                .withLayer()
                 .start();
         drawer.animate()
                 .translationX(target)
                 .setDuration(duration)
                 .setInterpolator(new DecelerateInterpolator())
+                .withLayer()
                 .withEndAction(() -> {
                     if (!open) {
                         drawer.setVisibility(View.INVISIBLE);
@@ -1074,13 +1091,6 @@ public final class MainActivity extends Activity {
             return;
         }
         selectMode(mode);
-        drawer.post(() -> {
-            syncDrawerToActiveKana();
-            showDrawerLayer();
-            drawer.setTranslationX(0f);
-            drawerScrim.setAlpha(1f);
-            drawerOpen = true;
-        });
     }
 
     private void selectMode(String mode) {
@@ -1088,7 +1098,12 @@ public final class MainActivity extends Activity {
             return;
         }
         hideKeyboard();
+        String previousBaseMode = baseStudyMode(currentMode);
         currentMode = mode;
+        if (!previousBaseMode.equals(baseStudyMode(currentMode))) {
+            activeKana = null;
+            expandedKanaGroups.clear();
+        }
         searchQuery = "";
         selectedVocabularyWord = null;
         if ("N1".equals(currentLevel)
@@ -1106,7 +1121,8 @@ public final class MainActivity extends Activity {
             resetGrammarQuizReady();
         }
         preferences.edit().putString(PREF_MODE, currentMode).apply();
-        buildInterface();
+        renderCurrentScreen();
+        populateDrawerMenuContent();
     }
 
     private void selectLevel(String level) {
@@ -1127,7 +1143,8 @@ public final class MainActivity extends Activity {
             resetGrammarQuizReady();
         }
         preferences.edit().putString(PREF_LEVEL, currentLevel).apply();
-        buildInterface();
+        renderCurrentScreen();
+        populateDrawerMenuContent();
     }
 
     private void jumpToKana(String kana) {
