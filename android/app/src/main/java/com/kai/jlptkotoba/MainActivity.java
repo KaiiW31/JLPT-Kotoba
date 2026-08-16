@@ -120,6 +120,12 @@ public final class MainActivity extends Activity {
     private float previousScaleFocusX;
     private float previousScaleFocusY;
     private boolean contentScaleGestureActive;
+    private boolean contentPanTracking;
+    private boolean contentPanDragging;
+    private float contentPanStartX;
+    private float contentPanStartY;
+    private float contentPanStartTranslationX;
+    private float contentPanStartTranslationY;
     private LinearLayout topChrome;
     private LinearLayout content;
     private View drawerScrim;
@@ -166,6 +172,14 @@ public final class MainActivity extends Activity {
     private int vocabularyScrollGeneration;
     private long vocabularyScrollLastFrameNanos;
     private boolean vocabularyKanaScrollRunning;
+    private boolean vocabularyControlsTouchTracking;
+    private float vocabularyControlsTouchStartY;
+    private float vocabularyControlsTouchStartOffset;
+    private boolean searchRestoreCaptured;
+    private int searchRestorePosition = -1;
+    private int searchRestoreTop;
+    private float searchRestoreControlsOffset;
+    private String searchRestoreKana;
 
     private List<Word> flashDeck = new ArrayList<>();
     private int flashIndex = -1;
@@ -1015,6 +1029,14 @@ public final class MainActivity extends Activity {
         int action = event.getActionMasked();
         if (action == MotionEvent.ACTION_DOWN) {
             contentScaleGestureActive = false;
+            contentPanTracking = contentScale > MIN_CONTENT_SCALE + 0.001f
+                    && !drawerOpen
+                    && !settingsOpen;
+            contentPanDragging = false;
+            contentPanStartX = event.getX();
+            contentPanStartY = event.getY();
+            contentPanStartTranslationX = contentTranslationX;
+            contentPanStartTranslationY = contentTranslationY;
         }
 
         if (!drawerOpen && !settingsOpen && contentScaleDetector != null) {
@@ -1028,6 +1050,8 @@ public final class MainActivity extends Activity {
                     cancel.recycle();
                 }
                 contentScaleGestureActive = true;
+                contentPanTracking = false;
+                contentPanDragging = false;
                 drawerGestureTracking = false;
                 drawerGestureDragging = false;
                 settingsGestureTracking = false;
@@ -1038,6 +1062,47 @@ public final class MainActivity extends Activity {
                     preferences.edit().putFloat(PREF_CONTENT_SCALE, contentScale).apply();
                 }
                 return true;
+            }
+        }
+
+        if (contentPanTracking && !drawerOpen && !settingsOpen) {
+            float deltaX = event.getX() - contentPanStartX;
+            float deltaY = event.getY() - contentPanStartY;
+            float horizontalDistance = Math.abs(deltaX);
+            float verticalDistance = Math.abs(deltaY);
+            int touchSlop = ViewConfiguration.get(this).getScaledTouchSlop();
+
+            if (action == MotionEvent.ACTION_MOVE && !contentPanDragging) {
+                if (verticalDistance > touchSlop && verticalDistance > horizontalDistance) {
+                    contentPanTracking = false;
+                } else if (horizontalDistance > touchSlop && horizontalDistance > verticalDistance) {
+                    contentPanDragging = true;
+                    drawerGestureTracking = false;
+                    drawerGestureDragging = false;
+                    settingsGestureTracking = false;
+                    settingsGestureDragging = false;
+                    recycleDrawerVelocityTracker();
+                    MotionEvent cancel = MotionEvent.obtain(event);
+                    cancel.setAction(MotionEvent.ACTION_CANCEL);
+                    super.dispatchTouchEvent(cancel);
+                    cancel.recycle();
+                }
+            }
+
+            if (action == MotionEvent.ACTION_MOVE && contentPanDragging) {
+                contentTranslationX = contentPanStartTranslationX + deltaX;
+                contentTranslationY = contentPanStartTranslationY;
+                applyContentTransform();
+                return true;
+            }
+
+            if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+                boolean consumed = contentPanDragging;
+                contentPanTracking = false;
+                contentPanDragging = false;
+                if (consumed) {
+                    return true;
+                }
             }
         }
 
@@ -1059,7 +1124,9 @@ public final class MainActivity extends Activity {
             boolean insideOpenDrawer = drawerOpen && drawer != null;
             int safeLeft = Math.max(dp(32), systemGestureInsetLeft + dp(8));
             int safeRight = Math.max(dp(32), systemGestureInsetRight + dp(8));
+            boolean contentAtBaseScale = contentScale <= MIN_CONTENT_SCALE + 0.001f;
             boolean insideGestureSafeContent = !drawerOpen && !settingsOpen
+                    && contentAtBaseScale
                     && root != null
                     && drawerGestureStartX >= safeLeft
                     && drawerGestureStartX <= root.getWidth() - safeRight;
@@ -1299,6 +1366,7 @@ public final class MainActivity extends Activity {
             expandedKanaGroups.clear();
         }
         searchQuery = "";
+        clearSearchRestorePosition();
         selectedVocabularyWord = null;
         if ("N1".equals(currentLevel)
                 && "vocabulary".equals(baseStudyMode(mode))) {
@@ -1331,6 +1399,7 @@ public final class MainActivity extends Activity {
         currentLevel = level;
         activeKana = null;
         searchQuery = "";
+        clearSearchRestorePosition();
         selectedVocabularyWord = null;
         loadedFlashLevel = null;
         if ("grammar_quiz".equals(currentMode)) {
@@ -1348,6 +1417,7 @@ public final class MainActivity extends Activity {
         activeKana = kana;
         boolean clearingSearch = !searchQuery.isEmpty();
         searchQuery = "";
+        clearSearchRestorePosition();
         if (clearingSearch) {
             renderCurrentScreen();
         }
@@ -1695,22 +1765,13 @@ public final class MainActivity extends Activity {
         heading.addView(headingText, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
         vocabularyControls.addView(heading);
 
-        EditText search = new EditText(this);
-        search.setSingleLine(true);
-        search.setText(searchQuery);
-        search.setSelection(search.getText().length());
-        search.setHint("Search word, reading, romaji, type, or meaning");
-        search.setHintTextColor(muted);
-        search.setTextColor(ink);
-        search.setTextSize(15);
-        search.setPadding(dp(15), 0, dp(15), 0);
-        search.setBackground(roundedBackground(panel, line, 10));
+        EditText search = createSearchField("Search word, reading, romaji, type, or meaning");
         LinearLayout.LayoutParams searchParams = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 dp(52)
         );
         searchParams.setMargins(0, dp(14), 0, dp(8));
-        vocabularyControls.addView(search, searchParams);
+        vocabularyControls.addView(buildSearchBox(search), searchParams);
 
         vocabularyCount = label("", 13, muted, Typeface.BOLD);
         LinearLayout.LayoutParams countParams = new LinearLayout.LayoutParams(
@@ -1768,8 +1829,16 @@ public final class MainActivity extends Activity {
 
             @Override
             public void onTextChanged(CharSequence value, int start, int before, int count) {
+                boolean wasEmpty = searchQuery.isEmpty();
+                boolean isEmpty = value.length() == 0;
+                if (wasEmpty && !isEmpty) {
+                    captureSearchRestorePosition();
+                }
                 searchQuery = value.toString();
                 updateVocabularyFilter(allWords, searchQuery);
+                if (!wasEmpty && isEmpty) {
+                    restoreSearchPositionAfterFilter();
+                }
             }
 
             @Override
@@ -1847,6 +1916,7 @@ public final class MainActivity extends Activity {
                 updateVocabularyControlsForScroll(view, firstVisibleItem);
             }
         });
+        attachVocabularyControlsTouchTracking(vocabularyList);
         String initialKana = wordAdapter.firstKana();
         if (initialKana != null) {
             activeKana = initialKana;
@@ -1872,6 +1942,9 @@ public final class MainActivity extends Activity {
             showVocabularyControlsImmediately();
         } else if (vocabularyKanaScrollRunning) {
             animateVocabularyControls(true);
+        } else if (vocabularyControlsTouchTracking) {
+            // The touch listener maps the bar directly to the finger. Keep the
+            // row geometry cache current without applying the movement twice.
         } else if (pixelDelta != 0) {
             moveVocabularyControlsBy(pixelDelta);
             vocabularyControlsLastDirection = pixelDelta > 0 ? 1 : -1;
@@ -1949,14 +2022,47 @@ public final class MainActivity extends Activity {
             return;
         }
         float currentOffset = Math.max(0f, -vocabularyControls.getTranslationY());
-        float targetOffset = Math.max(
-                0f,
-                Math.min(vocabularyControlsHeight, currentOffset + scrollDelta)
-        );
+        float targetOffset = currentOffset + scrollDelta;
+        setVocabularyControlsOffset(targetOffset);
+    }
+
+    private void setVocabularyControlsOffset(float requestedOffset) {
+        if (vocabularyControls == null || vocabularyControlsHeight <= 0) {
+            return;
+        }
+        float targetOffset = clamp(requestedOffset, 0f, vocabularyControlsHeight);
         vocabularyControls.animate().cancel();
         vocabularyControls.setTranslationY(-targetOffset);
         vocabularyControls.setAlpha(1f);
         vocabularyControlsHidden = targetOffset >= vocabularyControlsHeight - 1f;
+    }
+
+    @SuppressLint("ClickableViewAccessibility")
+    private void attachVocabularyControlsTouchTracking(ListView list) {
+        list.setOnTouchListener((view, event) -> {
+            int action = event.getActionMasked();
+            if (action == MotionEvent.ACTION_DOWN) {
+                vocabularyControlsTouchTracking = true;
+                vocabularyControlsTouchStartY = event.getRawY();
+                vocabularyControlsTouchStartOffset = vocabularyControls == null
+                        ? 0f
+                        : Math.max(0f, -vocabularyControls.getTranslationY());
+                if (vocabularyControls != null) {
+                    vocabularyControls.animate().cancel();
+                }
+            } else if (action == MotionEvent.ACTION_MOVE
+                    && vocabularyControlsTouchTracking
+                    && event.getPointerCount() == 1) {
+                float fingerTravel = vocabularyControlsTouchStartY - event.getRawY();
+                if (Math.abs(fingerTravel) > 0.5f) {
+                    vocabularyControlsLastDirection = fingerTravel > 0f ? 1 : -1;
+                    setVocabularyControlsOffset(vocabularyControlsTouchStartOffset + fingerTravel);
+                }
+            } else if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+                vocabularyControlsTouchTracking = false;
+            }
+            return false;
+        });
     }
 
     private void settleVocabularyControls() {
@@ -2014,6 +2120,109 @@ public final class MainActivity extends Activity {
                 : filtered.size() + " words");
     }
 
+    private EditText createSearchField(String hint) {
+        EditText search = new EditText(this);
+        search.setSingleLine(true);
+        search.setText(searchQuery);
+        search.setSelection(search.getText().length());
+        search.setHint(hint);
+        search.setHintTextColor(muted);
+        search.setTextColor(ink);
+        search.setTextSize(15);
+        search.setPadding(dp(15), 0, dp(52), 0);
+        search.setBackgroundColor(Color.TRANSPARENT);
+        return search;
+    }
+
+    private FrameLayout buildSearchBox(EditText search) {
+        FrameLayout box = new FrameLayout(this);
+        box.setBackground(roundedBackground(panel, line, 10));
+        box.addView(search, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+        ));
+
+        ImageView clear = new ImageView(this);
+        clear.setImageResource(android.R.drawable.ic_menu_close_clear_cancel);
+        clear.setImageTintList(ColorStateList.valueOf(muted));
+        clear.setScaleType(ImageView.ScaleType.CENTER_INSIDE);
+        clear.setPadding(dp(11), dp(11), dp(11), dp(11));
+        clear.setContentDescription("Clear search");
+        clear.setBackgroundColor(Color.TRANSPARENT);
+        clear.setVisibility(search.length() == 0 ? View.GONE : View.VISIBLE);
+        clear.setOnClickListener(view -> {
+            search.setText("");
+            search.requestFocus();
+        });
+        FrameLayout.LayoutParams clearParams = new FrameLayout.LayoutParams(
+                dp(46),
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                Gravity.END | Gravity.CENTER_VERTICAL
+        );
+        box.addView(clear, clearParams);
+
+        search.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence value, int start, int count, int after) { }
+            @Override public void onTextChanged(CharSequence value, int start, int before, int count) {
+                clear.setVisibility(value.length() == 0 ? View.GONE : View.VISIBLE);
+            }
+            @Override public void afterTextChanged(Editable value) { }
+        });
+        return box;
+    }
+
+    private void captureSearchRestorePosition() {
+        if (searchRestoreCaptured || vocabularyList == null) {
+            return;
+        }
+        searchRestoreCaptured = true;
+        searchRestorePosition = vocabularyList.getFirstVisiblePosition();
+        View firstChild = vocabularyList.getChildAt(0);
+        searchRestoreTop = firstChild == null ? 0 : firstChild.getTop();
+        searchRestoreControlsOffset = vocabularyControls == null
+                ? 0f
+                : Math.max(0f, -vocabularyControls.getTranslationY());
+        searchRestoreKana = activeKana;
+    }
+
+    private void restoreSearchPositionAfterFilter() {
+        if (!searchRestoreCaptured || vocabularyList == null) {
+            return;
+        }
+        int position = searchRestorePosition;
+        int top = searchRestoreTop;
+        float controlsOffset = searchRestoreControlsOffset;
+        String kana = searchRestoreKana;
+        clearSearchRestorePosition();
+        ListView targetList = vocabularyList;
+        targetList.post(() -> {
+            if (targetList != vocabularyList || targetList.getCount() == 0) {
+                return;
+            }
+            int clampedPosition = Math.max(0, Math.min(position, targetList.getCount() - 1));
+            targetList.setSelectionFromTop(clampedPosition, top);
+            setVocabularyControlsOffset(controlsOffset);
+            vocabularyScrollPreviousFirst = -1;
+            vocabularyVisibleItemTops.clear();
+            if (kana != null) {
+                activeKana = kana;
+            } else {
+                String visibleKana = kanaAtPosition(clampedPosition);
+                if (visibleKana != null) {
+                    activeKana = visibleKana;
+                }
+            }
+        });
+    }
+
+    private void clearSearchRestorePosition() {
+        searchRestoreCaptured = false;
+        searchRestorePosition = -1;
+        searchRestoreTop = 0;
+        searchRestoreControlsOffset = 0f;
+        searchRestoreKana = null;
+    }
+
     private void renderReferenceList(String section) {
         if (vocabularyControls != null) {
             vocabularyControls.animate().cancel();
@@ -2052,24 +2261,15 @@ public final class MainActivity extends Activity {
         heading.addView(label("Search or browse the complete " + title.toLowerCase(Locale.ROOT) + " list.", 14, muted, Typeface.NORMAL));
         vocabularyControls.addView(heading);
 
-        EditText search = new EditText(this);
-        search.setSingleLine(true);
-        search.setText(searchQuery);
-        search.setSelection(search.getText().length());
-        search.setHint("grammar".equals(section)
+        EditText search = createSearchField("grammar".equals(section)
                 ? "Search grammar, romaji, or meaning"
                 : "Search kanji, readings, or meaning");
-        search.setHintTextColor(muted);
-        search.setTextColor(ink);
-        search.setTextSize(15);
-        search.setPadding(dp(15), 0, dp(15), 0);
-        search.setBackground(roundedBackground(panel, line, 10));
         LinearLayout.LayoutParams searchParams = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 dp(52)
         );
         searchParams.setMargins(0, dp(14), 0, dp(8));
-        vocabularyControls.addView(search, searchParams);
+        vocabularyControls.addView(buildSearchBox(search), searchParams);
 
         vocabularyCount = label("", 13, muted, Typeface.BOLD);
         LinearLayout.LayoutParams countParams = new LinearLayout.LayoutParams(
@@ -2124,8 +2324,16 @@ public final class MainActivity extends Activity {
 
             @Override
             public void onTextChanged(CharSequence value, int start, int before, int count) {
+                boolean wasEmpty = searchQuery.isEmpty();
+                boolean isEmpty = value.length() == 0;
+                if (wasEmpty && !isEmpty) {
+                    captureSearchRestorePosition();
+                }
                 searchQuery = value.toString();
                 updateReferenceFilter(section, allRows, searchQuery);
+                if (!wasEmpty && isEmpty) {
+                    restoreSearchPositionAfterFilter();
+                }
             }
         });
 
@@ -2172,6 +2380,7 @@ public final class MainActivity extends Activity {
                 updateVocabularyControlsForScroll(view, firstVisibleItem);
             }
         });
+        attachVocabularyControlsTouchTracking(vocabularyList);
         String initialKana = studyAdapter == null ? null : studyAdapter.firstKana();
         if (initialKana != null) {
             activeKana = initialKana;
@@ -3318,6 +3527,7 @@ public final class MainActivity extends Activity {
                 selectedVocabularyWord = replacement;
                 loadedFlashLevel = null;
                 searchQuery = "";
+                clearSearchRestorePosition();
                 dialog.dismiss();
                 renderCurrentScreen();
                 Toast.makeText(this, "Vocabulary updated.", Toast.LENGTH_SHORT).show();
@@ -3387,6 +3597,7 @@ public final class MainActivity extends Activity {
             int added = repository.addCustomWords(currentLevel, imported);
             loadedFlashLevel = null;
             searchQuery = "";
+            clearSearchRestorePosition();
             renderCurrentScreen();
             Toast.makeText(
                     this,
