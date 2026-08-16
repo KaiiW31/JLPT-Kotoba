@@ -24,6 +24,7 @@ Both apps work locally. No account, internet permission, analytics, or cloud sto
 - Automatic active-kana tracking with smooth jumps to each vocabulary section
 - Clearly separated, aligned per-hiragana vocabulary tables
 - Full-text search across vocabulary, grammar, and kanji; CSV importing and vocabulary editing
+- Double-click any vocabulary, grammar, or kanji row to save or unsave it; Settings opens a grouped Saved page
 - Centered flashcards with left/right card navigation, center reveal, Restart-to-ready, progress, and saved sessions
 - Context-aware N5–N1 level selector, light and dark themes, and keyboard navigation
 
@@ -40,8 +41,10 @@ Both apps work locally. No account, internet permission, analytics, or cloud sto
 - A transient fast scrollbar while browsing long lists
 - Long-press deletion for imported custom words
 - Phone and tablet layouts
+- Two-finger pinch zoom and panning for the main screen while both side panels remain at normal size
+- Double-tap any vocabulary, grammar, or kanji row to save or unsave it; Settings opens a grouped Saved page
 
-Android stores custom vocabulary, settings, and flashcard progress in the app's private storage.
+Saved items are grouped only by populated study type, JLPT level, and kana. Android stores custom vocabulary, settings, saved items, and flashcard progress in the app's private storage.
 
 ## CSV format
 
@@ -62,7 +65,7 @@ android/   Native Android source and Gradle build
 tools/     Reproducible JLPT Sensei list synchronizer
 ```
 
-The root `custom_vocabulary.json` and `flashcard_progress.json` files are local Windows user data and are intentionally excluded from Git.
+The root `custom_vocabulary.json`, `flashcard_progress.json`, and `saved_items.json` files are local Windows user data and are intentionally excluded from Git.
 
 ## Development
 

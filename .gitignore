@@ -1,6 +1,7 @@
 # Local user data
 custom_vocabulary.json
 flashcard_progress.json
+saved_items.json
 
 # Python
 __pycache__/

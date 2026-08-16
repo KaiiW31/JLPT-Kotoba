@@ -21,6 +21,7 @@ import android.util.SparseIntArray;
 import android.view.Gravity;
 import android.view.Display;
 import android.view.MotionEvent;
+import android.view.ScaleGestureDetector;
 import android.view.VelocityTracker;
 import android.view.View;
 import android.view.ViewGroup;
@@ -93,6 +94,10 @@ public final class MainActivity extends Activity {
     private static final String PREF_DARK_MODE = "dark_mode";
     private static final String PREF_LEVEL = "current_level";
     private static final String PREF_MODE = "current_mode";
+    private static final String PREF_SAVED_ITEMS = "saved_items_v1";
+    private static final String PREF_CONTENT_SCALE = "content_scale";
+    private static final float MIN_CONTENT_SCALE = 1f;
+    private static final float MAX_CONTENT_SCALE = 2.4f;
 
     private SharedPreferences preferences;
     private VocabularyRepository repository;
@@ -100,9 +105,21 @@ public final class MainActivity extends Activity {
     private String currentLevel;
     private String currentMode;
     private String searchQuery = "";
+    private String savedReturnMode = "vocabulary";
+    private String savedReturnLevel = "N5";
+    private final List<SavedItem> savedItems = new ArrayList<>();
+    private String lastTappedSavedKey;
+    private long lastTappedAt;
 
     private FrameLayout root;
     private LinearLayout mainColumn;
+    private ScaleGestureDetector contentScaleDetector;
+    private float contentScale = 1f;
+    private float contentTranslationX;
+    private float contentTranslationY;
+    private float previousScaleFocusX;
+    private float previousScaleFocusY;
+    private boolean contentScaleGestureActive;
     private LinearLayout topChrome;
     private LinearLayout content;
     private View drawerScrim;
@@ -120,6 +137,8 @@ public final class MainActivity extends Activity {
     private VelocityTracker drawerVelocityTracker;
     private View settingsScrim;
     private LinearLayout settingsDrawer;
+    private Button settingsSavedButton;
+    private Button settingsResetZoomButton;
     private boolean settingsOpen;
     private boolean settingsGestureTracking;
     private boolean settingsGestureDragging;
@@ -137,6 +156,7 @@ public final class MainActivity extends Activity {
     private ListView vocabularyList;
     private WordAdapter wordAdapter;
     private StudyListAdapter studyAdapter;
+    private SavedAdapter savedAdapter;
     private boolean vocabularyControlsHidden;
     private int vocabularyControlsHeight;
     private int vocabularyScrollPreviousFirst = -1;
@@ -180,6 +200,12 @@ public final class MainActivity extends Activity {
         darkMode = preferences.getBoolean(PREF_DARK_MODE, false);
         currentLevel = preferences.getString(PREF_LEVEL, "N5");
         currentMode = preferences.getString(PREF_MODE, "vocabulary");
+        contentScale = clamp(
+                preferences.getFloat(PREF_CONTENT_SCALE, 1f),
+                MIN_CONTENT_SCALE,
+                MAX_CONTENT_SCALE
+        );
+        loadSavedItems();
         if (!isLevel(currentLevel)) {
             currentLevel = "N5";
         }
@@ -188,16 +214,19 @@ public final class MainActivity extends Activity {
                 && !"grammar".equals(currentMode)
                 && !"grammar_quiz".equals(currentMode)
                 && !"kanji".equals(currentMode)
-                && !"kanji_flashcards".equals(currentMode)) {
+                && !"kanji_flashcards".equals(currentMode)
+                && !"saved".equals(currentMode)) {
             currentMode = "vocabulary";
         }
         if ("N1".equals(currentLevel)
                 && ("vocabulary".equals(currentMode) || "flashcards".equals(currentMode))) {
             currentLevel = "N2";
         }
+        savedReturnLevel = currentLevel;
 
         try {
             repository = new VocabularyRepository(this, preferences);
+            configureContentScaleGesture();
             buildInterface();
             registerBackHandler();
         } catch (Exception error) {
@@ -227,6 +256,7 @@ public final class MainActivity extends Activity {
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
         ));
+        mainColumn.post(this::applyContentTransform);
 
         topChrome = new LinearLayout(this);
         topChrome.setOrientation(LinearLayout.VERTICAL);
@@ -377,6 +407,10 @@ public final class MainActivity extends Activity {
         modes.addView(kanji, weightedButtonParams(dp(4), 0));
         drawerMenuContent.addView(modes);
 
+        if ("saved".equals(currentMode)) {
+            return;
+        }
+
         String studyLabel = "grammar".equals(baseMode) ? "Quiz" : "Flashcards";
         Button study = button(studyLabel, isStudyMode(currentMode), false);
         study.setOnClickListener(view -> closeDrawer(this::selectContextStudy));
@@ -519,6 +553,38 @@ public final class MainActivity extends Activity {
             settingsOpen = true;
         });
         body.addView(theme, drawerItemParams(0));
+
+        body.addView(drawerSectionLabel("SAVED"));
+        settingsSavedButton = button(
+                savedItems.isEmpty()
+                        ? "Saved items"
+                        : "Saved items (" + savedItems.size() + ")",
+                "saved".equals(currentMode),
+                false
+        );
+        settingsSavedButton.setOnClickListener(view -> closeSettings(this::openSavedItems));
+        body.addView(settingsSavedButton, drawerItemParams(0));
+
+        body.addView(drawerSectionLabel("CONTENT ZOOM"));
+        TextView zoomHelp = label(
+                "Pinch with two fingers on the main screen. The side panels stay at their normal size.",
+                12,
+                muted,
+                Typeface.NORMAL
+        );
+        zoomHelp.setPadding(dp(4), 0, dp(4), dp(8));
+        body.addView(zoomHelp);
+        settingsResetZoomButton = button(
+                "Reset zoom (" + Math.round(contentScale * 100f) + "%)",
+                false,
+                false
+        );
+        settingsResetZoomButton.setOnClickListener(view -> {
+            resetContentZoom();
+            settingsResetZoomButton.setText("Reset zoom (100%)");
+            Toast.makeText(this, "Content zoom reset.", Toast.LENGTH_SHORT).show();
+        });
+        body.addView(settingsResetZoomButton, drawerItemParams(0));
         scroll.addView(body, new ScrollView.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
@@ -551,6 +617,14 @@ public final class MainActivity extends Activity {
     private void openSettings() {
         if (settingsOpen || settingsDrawer == null) {
             return;
+        }
+        if (settingsSavedButton != null) {
+            settingsSavedButton.setText(savedItems.isEmpty()
+                    ? "Saved items"
+                    : "Saved items (" + savedItems.size() + ")");
+        }
+        if (settingsResetZoomButton != null) {
+            settingsResetZoomButton.setText("Reset zoom (" + Math.round(contentScale * 100f) + "%)");
         }
         hideKeyboard();
         showSettingsLayer();
@@ -850,6 +924,8 @@ public final class MainActivity extends Activity {
                             closeSettings(null);
                         } else if (drawerOpen) {
                             closeDrawer(null);
+                        } else if ("saved".equals(currentMode)) {
+                            returnFromSavedItems();
                         } else if (isStudyMode(currentMode)) {
                             selectMode(baseStudyMode(currentMode));
                         } else {
@@ -860,9 +936,111 @@ public final class MainActivity extends Activity {
         }
     }
 
+    private void configureContentScaleGesture() {
+        contentScaleDetector = new ScaleGestureDetector(
+                this,
+                new ScaleGestureDetector.SimpleOnScaleGestureListener() {
+                    @Override
+                    public boolean onScaleBegin(ScaleGestureDetector detector) {
+                        previousScaleFocusX = detector.getFocusX();
+                        previousScaleFocusY = detector.getFocusY();
+                        return drawer == null || (!drawerOpen && !settingsOpen);
+                    }
+
+                    @Override
+                    public boolean onScale(ScaleGestureDetector detector) {
+                        float oldScale = contentScale;
+                        float nextScale = clamp(
+                                oldScale * detector.getScaleFactor(),
+                                MIN_CONTENT_SCALE,
+                                MAX_CONTENT_SCALE
+                        );
+                        float localFocusX = (previousScaleFocusX - contentTranslationX) / oldScale;
+                        float localFocusY = (previousScaleFocusY - contentTranslationY) / oldScale;
+                        contentTranslationX = detector.getFocusX() - localFocusX * nextScale;
+                        contentTranslationY = detector.getFocusY() - localFocusY * nextScale;
+                        contentScale = nextScale;
+                        previousScaleFocusX = detector.getFocusX();
+                        previousScaleFocusY = detector.getFocusY();
+                        applyContentTransform();
+                        return true;
+                    }
+
+                    @Override
+                    public void onScaleEnd(ScaleGestureDetector detector) {
+                        preferences.edit().putFloat(PREF_CONTENT_SCALE, contentScale).apply();
+                    }
+                }
+        );
+    }
+
+    private void applyContentTransform() {
+        if (mainColumn == null || root == null) {
+            return;
+        }
+        mainColumn.setPivotX(0f);
+        mainColumn.setPivotY(0f);
+        if (contentScale <= MIN_CONTENT_SCALE + 0.001f) {
+            contentScale = MIN_CONTENT_SCALE;
+            contentTranslationX = 0f;
+            contentTranslationY = 0f;
+        } else {
+            float viewportWidth = Math.max(1f, root.getWidth());
+            float viewportHeight = Math.max(1f, root.getHeight());
+            float minimumX = viewportWidth - viewportWidth * contentScale;
+            float minimumY = viewportHeight - viewportHeight * contentScale;
+            contentTranslationX = Math.max(minimumX, Math.min(0f, contentTranslationX));
+            contentTranslationY = Math.max(minimumY, Math.min(0f, contentTranslationY));
+        }
+        mainColumn.setScaleX(contentScale);
+        mainColumn.setScaleY(contentScale);
+        mainColumn.setTranslationX(contentTranslationX);
+        mainColumn.setTranslationY(contentTranslationY);
+    }
+
+    private void resetContentZoom() {
+        contentScale = MIN_CONTENT_SCALE;
+        contentTranslationX = 0f;
+        contentTranslationY = 0f;
+        preferences.edit().putFloat(PREF_CONTENT_SCALE, contentScale).apply();
+        applyContentTransform();
+    }
+
+    private float clamp(float value, float minimum, float maximum) {
+        return Math.max(minimum, Math.min(maximum, value));
+    }
+
     @Override
     public boolean dispatchTouchEvent(MotionEvent event) {
         int action = event.getActionMasked();
+        if (action == MotionEvent.ACTION_DOWN) {
+            contentScaleGestureActive = false;
+        }
+
+        if (!drawerOpen && !settingsOpen && contentScaleDetector != null) {
+            contentScaleDetector.onTouchEvent(event);
+            boolean scalingNow = contentScaleDetector.isInProgress() || event.getPointerCount() > 1;
+            if (scalingNow || contentScaleGestureActive) {
+                if (!contentScaleGestureActive) {
+                    MotionEvent cancel = MotionEvent.obtain(event);
+                    cancel.setAction(MotionEvent.ACTION_CANCEL);
+                    super.dispatchTouchEvent(cancel);
+                    cancel.recycle();
+                }
+                contentScaleGestureActive = true;
+                drawerGestureTracking = false;
+                drawerGestureDragging = false;
+                settingsGestureTracking = false;
+                settingsGestureDragging = false;
+                recycleDrawerVelocityTracker();
+                if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+                    contentScaleGestureActive = false;
+                    preferences.edit().putFloat(PREF_CONTENT_SCALE, contentScale).apply();
+                }
+                return true;
+            }
+        }
+
         if (action == MotionEvent.ACTION_DOWN) {
             vocabularyScrollGeneration++;
             vocabularyKanaScrollRunning = false;
@@ -1039,6 +1217,8 @@ public final class MainActivity extends Activity {
             closeSettings(null);
         } else if (drawerOpen) {
             closeDrawer(null);
+        } else if ("saved".equals(currentMode)) {
+            returnFromSavedItems();
         } else if (isStudyMode(currentMode)) {
             selectMode(baseStudyMode(currentMode));
         } else {
@@ -1067,6 +1247,20 @@ public final class MainActivity extends Activity {
 
     private boolean isFlashMode(String mode) {
         return "flashcards".equals(mode) || "kanji_flashcards".equals(mode);
+    }
+
+    private void openSavedItems() {
+        if (!"saved".equals(currentMode)) {
+            savedReturnMode = currentMode;
+            savedReturnLevel = currentLevel;
+        }
+        selectMode("saved");
+    }
+
+    private void returnFromSavedItems() {
+        currentLevel = isLevel(savedReturnLevel) ? savedReturnLevel : "N5";
+        preferences.edit().putString(PREF_LEVEL, currentLevel).apply();
+        selectMode("saved".equals(savedReturnMode) ? "vocabulary" : savedReturnMode);
     }
 
     private void selectContextStudy() {
@@ -1583,6 +1777,18 @@ public final class MainActivity extends Activity {
             }
         });
 
+        vocabularyList.setOnItemClickListener((parent, view, position, id) -> {
+            Word selected = wordAdapter == null ? null : wordAdapter.getItem(position);
+            if (selected != null) {
+                selectedVocabularyWord = selected;
+                handlePossibleDoubleTap(SavedItem.vocabulary(
+                        currentLevel,
+                        normalizedFirstKana(selected.furigana),
+                        selected
+                ));
+            }
+        });
+
         vocabularyList.setOnItemLongClickListener((parent, view, position, id) -> {
             Word selected = wordAdapter.getItem(position);
             if (selected == null) {
@@ -1920,6 +2126,18 @@ public final class MainActivity extends Activity {
             public void onTextChanged(CharSequence value, int start, int before, int count) {
                 searchQuery = value.toString();
                 updateReferenceFilter(section, allRows, searchQuery);
+            }
+        });
+
+        vocabularyList.setOnItemClickListener((parent, view, position, id) -> {
+            StudyRow selected = studyAdapter == null ? null : studyAdapter.getItem(position);
+            if (selected != null) {
+                handlePossibleDoubleTap(SavedItem.study(
+                        section,
+                        currentLevel,
+                        studyRowKana(section, selected),
+                        selected
+                ));
             }
         });
 
@@ -2814,10 +3032,218 @@ public final class MainActivity extends Activity {
         return params;
     }
 
+    private void loadSavedItems() {
+        savedItems.clear();
+        String raw = preferences.getString(PREF_SAVED_ITEMS, "[]");
+        try {
+            JSONArray array = new JSONArray(raw);
+            Set<String> seen = new HashSet<>();
+            for (int index = 0; index < array.length(); index++) {
+                SavedItem item = SavedItem.fromJson(array.getJSONObject(index));
+                if (("vocabulary".equals(item.section)
+                        || "grammar".equals(item.section)
+                        || "kanji".equals(item.section))
+                        && isLevel(item.level)
+                        && item.values.length > 0
+                        && seen.add(item.key())) {
+                    savedItems.add(item);
+                }
+            }
+        } catch (JSONException ignored) {
+            savedItems.clear();
+        }
+    }
+
+    private void writeSavedItems() {
+        JSONArray array = new JSONArray();
+        for (SavedItem item : savedItems) {
+            try {
+                array.put(item.toJson());
+            } catch (JSONException ignored) {
+                // Every saved field is a plain string, so this is only defensive.
+            }
+        }
+        preferences.edit().putString(PREF_SAVED_ITEMS, array.toString()).apply();
+    }
+
+    private boolean isSaved(SavedItem candidate) {
+        String key = candidate.key();
+        for (SavedItem item : savedItems) {
+            if (item.key().equals(key)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private void handlePossibleDoubleTap(SavedItem candidate) {
+        long now = System.currentTimeMillis();
+        String key = candidate.key();
+        boolean doubleTap = key.equals(lastTappedSavedKey)
+                && now - lastTappedAt <= ViewConfiguration.getDoubleTapTimeout();
+        lastTappedSavedKey = doubleTap ? null : key;
+        lastTappedAt = doubleTap ? 0L : now;
+        if (doubleTap) {
+            toggleSavedItem(candidate);
+        }
+    }
+
+    private void toggleSavedItem(SavedItem candidate) {
+        int existingIndex = -1;
+        for (int index = 0; index < savedItems.size(); index++) {
+            if (savedItems.get(index).key().equals(candidate.key())) {
+                existingIndex = index;
+                break;
+            }
+        }
+        boolean saved;
+        if (existingIndex >= 0) {
+            savedItems.remove(existingIndex);
+            saved = false;
+        } else {
+            savedItems.add(candidate);
+            saved = true;
+        }
+        writeSavedItems();
+        if (settingsSavedButton != null) {
+            settingsSavedButton.setText(savedItems.isEmpty()
+                    ? "Saved items"
+                    : "Saved items (" + savedItems.size() + ")");
+        }
+        Toast.makeText(
+                this,
+                "\"" + candidate.displayName() + "\" "
+                        + (saved ? "saved." : "removed from Saved."),
+                Toast.LENGTH_SHORT
+        ).show();
+        if ("saved".equals(currentMode)) {
+            renderCurrentScreen();
+        } else {
+            if (wordAdapter != null) {
+                wordAdapter.notifyDataSetChanged();
+            }
+            if (studyAdapter != null) {
+                studyAdapter.notifyDataSetChanged();
+            }
+        }
+    }
+
+    private List<SavedItem> sortedSavedItems() {
+        List<SavedItem> result = new ArrayList<>(savedItems);
+        result.sort((left, right) -> {
+            int sectionOrder = Integer.compare(savedSectionOrder(left.section), savedSectionOrder(right.section));
+            if (sectionOrder != 0) {
+                return sectionOrder;
+            }
+            int levelOrder = Integer.compare(levelOrder(left.level), levelOrder(right.level));
+            if (levelOrder != 0) {
+                return levelOrder;
+            }
+            int kanaOrder = Integer.compare(kanaOrderIndex(left.kana), kanaOrderIndex(right.kana));
+            if (kanaOrder != 0) {
+                return kanaOrder;
+            }
+            return left.displayName().compareToIgnoreCase(right.displayName());
+        });
+        return result;
+    }
+
+    private int savedSectionOrder(String section) {
+        if ("vocabulary".equals(section)) return 0;
+        if ("grammar".equals(section)) return 1;
+        if ("kanji".equals(section)) return 2;
+        return 3;
+    }
+
+    private int levelOrder(String level) {
+        for (int index = 0; index < LEVELS.length; index++) {
+            if (LEVELS[index].equals(level)) {
+                return index;
+            }
+        }
+        return LEVELS.length;
+    }
+
+    private String savedSectionTitle(String section) {
+        if ("vocabulary".equals(section)) return "Vocabulary";
+        if ("grammar".equals(section)) return "Grammar";
+        if ("kanji".equals(section)) return "Kanji";
+        return section;
+    }
+
+    private void renderSavedItems() {
+        wordAdapter = null;
+        studyAdapter = null;
+        vocabularyList = null;
+        vocabularyControls = null;
+        activeKana = null;
+
+        LinearLayout heading = new LinearLayout(this);
+        heading.setOrientation(LinearLayout.VERTICAL);
+        heading.addView(label("Saved", 25, ink, Typeface.BOLD));
+        heading.addView(label(
+                "Double-tap a saved row to remove it.",
+                14,
+                muted,
+                Typeface.NORMAL
+        ));
+        content.addView(heading);
+
+        TextView count = label(
+                savedItems.size() + (savedItems.size() == 1 ? " saved item" : " saved items"),
+                13,
+                muted,
+                Typeface.BOLD
+        );
+        LinearLayout.LayoutParams countParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        countParams.setMargins(0, dp(12), 0, dp(8));
+        content.addView(count, countParams);
+
+        if (savedItems.isEmpty()) {
+            TextView empty = label(
+                    "Nothing saved yet.\n\nDouble-tap any Vocabulary, Grammar, or Kanji row to keep it here.",
+                    17,
+                    muted,
+                    Typeface.NORMAL
+            );
+            empty.setGravity(Gravity.CENTER);
+            content.addView(empty, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    0,
+                    1
+            ));
+            return;
+        }
+
+        vocabularyList = new ListView(this);
+        vocabularyList.setDivider(new ColorDrawable(line));
+        vocabularyList.setDividerHeight(1);
+        vocabularyList.setBackgroundColor(paper);
+        configureTransientScrollbar(vocabularyList);
+        savedAdapter = new SavedAdapter(sortedSavedItems());
+        vocabularyList.setAdapter(savedAdapter);
+        vocabularyList.setOnItemClickListener((parent, view, position, id) -> {
+            SavedItem item = savedAdapter.getItem(position);
+            if (item != null) {
+                handlePossibleDoubleTap(item);
+            }
+        });
+        content.addView(vocabularyList, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                0,
+                1
+        ));
+    }
+
     private void renderCurrentScreen() {
         hideKeyboard();
         content.removeAllViews();
-        if (isFlashMode(currentMode)) {
+        if ("saved".equals(currentMode)) {
+            renderSavedItems();
+        } else if (isFlashMode(currentMode)) {
             renderFlashcards();
         } else if ("grammar_quiz".equals(currentMode)) {
             renderGrammarQuiz();
@@ -3313,7 +3739,15 @@ public final class MainActivity extends Activity {
                     ? panel
                     : (darkMode ? Color.rgb(39, 27, 37) : Color.rgb(255, 247, 239)));
 
+            boolean saved = isSaved(SavedItem.vocabulary(
+                    currentLevel,
+                    normalizedFirstKana(word.furigana),
+                    word
+            ));
             String kanji = word.kanji.isEmpty() ? "—" : word.kanji;
+            if (saved) {
+                kanji += "  ★";
+            }
             int kanjiColor = word.custom ? accent : ink;
             addTableCell(row, kanji, 0.9f, kanjiColor, Typeface.BOLD, 13);
             addTableCell(row, word.furigana, 1.0f, ink, Typeface.NORMAL, 12);
@@ -3388,7 +3822,9 @@ public final class MainActivity extends Activity {
             return items.get(position).kind;
         }
         @Override public boolean areAllItemsEnabled() { return false; }
-        @Override public boolean isEnabled(int position) { return false; }
+        @Override public boolean isEnabled(int position) {
+            return items.get(position).kind == ROW;
+        }
 
         int positionForKana(String kana) {
             for (int index = 0; index < items.size(); index++) {
@@ -3455,10 +3891,20 @@ public final class MainActivity extends Activity {
             row.setBackgroundColor(position % 2 == 0
                     ? panel
                     : (darkMode ? Color.rgb(39, 27, 37) : Color.rgb(255, 247, 239)));
+            boolean saved = isSaved(SavedItem.study(
+                    section,
+                    currentLevel,
+                    studyRowKana(section, item),
+                    item
+            ));
             for (int index = 0; index < item.values.length; index++) {
                 int color = index == 0 ? (darkMode ? Color.rgb(255, 216, 200) : accent) : (index == item.values.length - 1 ? ink : muted);
                 int style = index == 0 ? Typeface.BOLD : Typeface.NORMAL;
-                addStudyCell(row, item.values[index], weights[index], color, style, index == 0 ? 13 : 11);
+                String value = item.values[index];
+                if (index == 0 && saved) {
+                    value += "  ★";
+                }
+                addStudyCell(row, value, weights[index], color, style, index == 0 ? 13 : 11);
             }
             return row;
         }
@@ -3524,6 +3970,207 @@ public final class MainActivity extends Activity {
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     weight
             ));
+        }
+    }
+
+    private static final int SAVED_CATEGORY = 0;
+    private static final int SAVED_LEVEL = 1;
+    private static final int SAVED_SECTION = 2;
+    private static final int SAVED_ROW = 3;
+
+    private final class SavedAdapter extends BaseAdapter {
+        private final List<SavedAdapterItem> items = new ArrayList<>();
+
+        SavedAdapter(List<SavedItem> saved) {
+            String previousCategory = null;
+            String previousLevel = null;
+            String previousKana = null;
+            for (SavedItem item : saved) {
+                if (!item.section.equals(previousCategory)) {
+                    items.add(new SavedAdapterItem(SAVED_CATEGORY, item, null));
+                    previousCategory = item.section;
+                    previousLevel = null;
+                    previousKana = null;
+                }
+                if (!item.level.equals(previousLevel)) {
+                    items.add(new SavedAdapterItem(SAVED_LEVEL, item, null));
+                    previousLevel = item.level;
+                    previousKana = null;
+                }
+                String kana = item.kana.isEmpty() ? "Other" : item.kana;
+                if (!kana.equals(previousKana)) {
+                    items.add(new SavedAdapterItem(SAVED_SECTION, item, kana));
+                    previousKana = kana;
+                }
+                items.add(new SavedAdapterItem(SAVED_ROW, item, kana));
+            }
+        }
+
+        @Override public int getCount() { return items.size(); }
+
+        @Override
+        public SavedItem getItem(int position) {
+            if (position < 0 || position >= items.size()) {
+                return null;
+            }
+            SavedAdapterItem item = items.get(position);
+            return item.kind == SAVED_ROW ? item.saved : null;
+        }
+
+        @Override public long getItemId(int position) { return position; }
+        @Override public int getViewTypeCount() { return 4; }
+        @Override public int getItemViewType(int position) { return items.get(position).kind; }
+        @Override public boolean areAllItemsEnabled() { return false; }
+        @Override public boolean isEnabled(int position) { return items.get(position).kind == SAVED_ROW; }
+
+        @Override
+        public View getView(int position, View convertView, ViewGroup parent) {
+            SavedAdapterItem adapterItem = items.get(position);
+            if (adapterItem.kind == SAVED_CATEGORY) {
+                return buildSavedCategory(adapterItem.saved.section, position == 0);
+            }
+            if (adapterItem.kind == SAVED_LEVEL) {
+                TextView level = label("JLPT " + adapterItem.saved.level, 19, ink, Typeface.BOLD);
+                level.setPadding(dp(16), dp(22), dp(16), dp(12));
+                level.setBackgroundColor(paper);
+                return level;
+            }
+            if (adapterItem.kind == SAVED_SECTION) {
+                return buildSavedKanaSection(adapterItem.saved.section, adapterItem.kana);
+            }
+            return buildSavedRow(adapterItem.saved, position);
+        }
+
+        private View buildSavedCategory(String section, boolean first) {
+            LinearLayout category = new LinearLayout(MainActivity.this);
+            category.setOrientation(LinearLayout.VERTICAL);
+            category.setPadding(dp(16), first ? dp(14) : dp(52), dp(16), 0);
+            category.setBackgroundColor(paper);
+
+            View marker = new View(MainActivity.this);
+            marker.setBackgroundColor(accent);
+            LinearLayout.LayoutParams markerParams = new LinearLayout.LayoutParams(dp(56), dp(4));
+            markerParams.setMargins(0, 0, 0, dp(10));
+            category.addView(marker, markerParams);
+            category.addView(label(savedSectionTitle(section), 25, ink, Typeface.BOLD));
+            return category;
+        }
+
+        private View buildSavedKanaSection(String section, String kana) {
+            LinearLayout sectionView = new LinearLayout(MainActivity.this);
+            sectionView.setOrientation(LinearLayout.VERTICAL);
+            sectionView.setPadding(0, dp(18), 0, 0);
+            sectionView.setBackgroundColor(paper);
+
+            TextView title = label(
+                    kana,
+                    27,
+                    darkMode ? Color.rgb(255, 216, 200) : accent,
+                    Typeface.BOLD
+            );
+            LinearLayout.LayoutParams titleParams = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+            );
+            titleParams.setMargins(dp(16), 0, 0, dp(10));
+            sectionView.addView(title, titleParams);
+
+            LinearLayout header = new LinearLayout(MainActivity.this);
+            header.setOrientation(LinearLayout.HORIZONTAL);
+            header.setGravity(Gravity.CENTER_VERTICAL);
+            header.setBackgroundColor(topbar);
+            header.setMinimumHeight(dp(40));
+            String[] labels = savedLabels(section);
+            float[] weights = savedWeights(section);
+            for (int index = 0; index < labels.length; index++) {
+                addSavedCell(header, labels[index], weights[index], Color.rgb(255, 247, 237), Typeface.BOLD, 10);
+            }
+            sectionView.addView(header);
+            return sectionView;
+        }
+
+        private View buildSavedRow(SavedItem saved, int position) {
+            LinearLayout row = new LinearLayout(MainActivity.this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            row.setMinimumHeight(dp("grammar".equals(saved.section) ? 66 : 60));
+            row.setBackgroundColor(position % 2 == 0
+                    ? panel
+                    : (darkMode ? Color.rgb(39, 27, 37) : Color.rgb(255, 247, 239)));
+            float[] weights = savedWeights(saved.section);
+            for (int index = 0; index < saved.values.length && index < weights.length; index++) {
+                String value = saved.values[index];
+                if (index == 0 && value.isEmpty() && "vocabulary".equals(saved.section)) {
+                    value = "—";
+                }
+                int color = index == 0
+                        ? (darkMode ? Color.rgb(255, 216, 200) : accent)
+                        : (index == saved.values.length - 1 ? ink : muted);
+                addSavedCell(
+                        row,
+                        value,
+                        weights[index],
+                        color,
+                        index == 0 ? Typeface.BOLD : Typeface.NORMAL,
+                        index == 0 ? 13 : 11
+                );
+            }
+            return row;
+        }
+
+        private String[] savedLabels(String section) {
+            if ("vocabulary".equals(section)) {
+                return new String[]{"Word", "Reading", "Romaji", "Type", "Meaning"};
+            }
+            if ("grammar".equals(section)) {
+                return new String[]{"Grammar", "Romaji", "Meaning"};
+            }
+            return new String[]{"Kanji", "On'yomi", "Kun'yomi", "Meaning"};
+        }
+
+        private float[] savedWeights(String section) {
+            if ("vocabulary".equals(section)) {
+                return new float[]{0.9f, 1.0f, 0.8f, 1.25f, 1.65f};
+            }
+            if ("grammar".equals(section)) {
+                return new float[]{1.45f, 1.1f, 2.45f};
+            }
+            return new float[]{0.65f, 1.65f, 1.65f, 2.05f};
+        }
+
+        private void addSavedCell(
+                LinearLayout row,
+                String text,
+                float weight,
+                int color,
+                int style,
+                float size
+        ) {
+            if (row.getChildCount() > 0) {
+                View divider = new View(MainActivity.this);
+                divider.setBackgroundColor(line);
+                row.addView(divider, new LinearLayout.LayoutParams(dp(1), ViewGroup.LayoutParams.MATCH_PARENT));
+            }
+            TextView cell = label(text, size, color, style);
+            cell.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
+            cell.setPadding(dp(8), dp(8), dp(6), dp(8));
+            row.addView(cell, new LinearLayout.LayoutParams(
+                    0,
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    weight
+            ));
+        }
+    }
+
+    private static final class SavedAdapterItem {
+        final int kind;
+        final SavedItem saved;
+        final String kana;
+
+        SavedAdapterItem(int kind, SavedItem saved, String kana) {
+            this.kind = kind;
+            this.saved = saved;
+            this.kana = kana;
         }
     }
 
