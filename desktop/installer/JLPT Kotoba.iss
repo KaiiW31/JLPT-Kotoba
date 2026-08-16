@@ -1,5 +1,5 @@
 #define MyAppName "JLPT Kotoba"
-#define MyAppVersion "1.4.4"
+#define MyAppVersion "1.4.6"
 #define MyAppPublisher "KaiiW31"
 #define MyAppURL "https://github.com/KaiiW31/JLPT-Kotoba"
 #define MyAppExeName "JLPT Kotoba.exe"
@@ -28,7 +28,7 @@ WizardStyle=modern
 CloseApplications=yes
 RestartApplications=no
 SetupLogging=yes
-VersionInfoVersion=1.4.4.0
+VersionInfoVersion=1.4.6.0
 VersionInfoProductVersion={#MyAppVersion}
 VersionInfoProductName={#MyAppName}
 VersionInfoDescription={#MyAppName} Setup
@@ -68,5 +68,6 @@ begin
   begin
     CopyPortableDataIfNeeded('flashcard_progress.json');
     CopyPortableDataIfNeeded('custom_vocabulary.json');
+    CopyPortableDataIfNeeded('saved_items.json');
   end;
 end;

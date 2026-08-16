@@ -49,6 +49,7 @@ ICON_PATH = BUNDLE_DIR / "assets" / "app_icon.ico"
 DATA_PATH = BUNDLE_DIR / "data" / "study_data.json"
 PROGRESS_PATH = APP_DIR / "flashcard_progress.json"
 CUSTOM_VOCAB_PATH = APP_DIR / "custom_vocabulary.json"
+SAVED_ITEMS_PATH = APP_DIR / "saved_items.json"
 
 LEVELS = ["N5", "N4", "N3", "N2", "N1"]
 STUDY_VIEWS = ["Vocabulary", "Flashcards", "Grammar", "Kanji"]
@@ -180,6 +181,7 @@ class JLPTStudyApp(ctk.CTk):
         self.vocab_import_overlay = None
         self.flash_progress = self.load_flash_progress()
         self.custom_vocab = self.load_custom_vocabulary()
+        self.saved_items = self.load_saved_items()
         self.search_after_id = None
         self.root_configure_after_id = None
         self.responsive_compact = None
@@ -457,7 +459,13 @@ class JLPTStudyApp(ctk.CTk):
         table_wrap.grid_columnconfigure(0, weight=1)
         table_wrap.grid_rowconfigure(0, weight=1)
 
-        self.vocab_table = VocabGrid(table_wrap, scale=self.reading_scale, active_kana_callback=self.sync_kana_from_table, selection_callback=self.update_vocab_edit_buttons)
+        self.vocab_table = VocabGrid(
+            table_wrap,
+            scale=self.reading_scale,
+            active_kana_callback=self.sync_kana_from_table,
+            selection_callback=self.update_vocab_edit_buttons,
+            double_click_callback=self.toggle_saved_row,
+        )
         self.vocab_table.grid(row=0, column=0, sticky="nsew", padx=8, pady=8)
         self.bind_all("<Button-1>", self.clear_vocab_selection_on_outside_click, add="+")
 
@@ -908,8 +916,26 @@ class JLPTStudyApp(ctk.CTk):
             command=self.toggle_theme,
         )
         self.settings_theme_button.grid(row=1, column=0, sticky="ew")
+        ctk.CTkLabel(
+            body,
+            text="SAVED",
+            text_color=MUTED,
+            font=ctk.CTkFont(size=11, weight="bold"),
+            anchor="w",
+        ).grid(row=2, column=0, sticky="ew", pady=(22, 8))
+        self.settings_saved_button = secondary_button(
+            body,
+            text=self.saved_button_text(),
+            height=46,
+            command=lambda: self.close_settings_then(self.show_saved),
+        )
+        self.settings_saved_button.grid(row=3, column=0, sticky="ew")
         self.settings_scrim.bind("<Escape>", lambda _event: self.close_settings())
         self.settings_scrim.place_forget()
+
+    def saved_button_text(self):
+        count = len(getattr(self, "saved_items", []))
+        return "Saved items" if count == 0 else f"Saved items ({count})"
 
     def theme_action_text(self):
         return "Use light theme" if ctk.get_appearance_mode() == "Dark" else "Use dark theme"
@@ -926,6 +952,7 @@ class JLPTStudyApp(ctk.CTk):
             self.settings_target_x = self.settings_x
             self.settings_panel.place_configure(x=round(self.settings_x))
         self.settings_theme_button.configure(text=self.theme_action_text())
+        self.settings_saved_button.configure(text=self.saved_button_text())
         self.settings_scrim.focus_set()
         self.settings_open = True
         self.start_settings_animation(max(0, self.winfo_width() - self.settings_width))
@@ -1007,7 +1034,7 @@ class JLPTStudyApp(ctk.CTk):
             "Flashcards": "Vocabulary",
             "Grammar Quiz": "Grammar",
             "Kanji Flashcards": "Kanji",
-        }.get(view, view if view in {"Vocabulary", "Grammar", "Kanji"} else "Vocabulary")
+        }.get(view, view if view in {"Vocabulary", "Grammar", "Kanji"} else None)
 
     def study_view_for_base(self, base_view):
         return {
@@ -1018,6 +1045,8 @@ class JLPTStudyApp(ctk.CTk):
 
     def start_context_study(self):
         base_view = self.base_study_view()
+        if base_view is None:
+            return
         if self.current_view == self.study_view_for_base(base_view):
             self.close_drawer()
             return
@@ -1032,13 +1061,18 @@ class JLPTStudyApp(ctk.CTk):
     def sync_drawer_content(self):
         base_view = self.base_study_view()
         browse_mode = self.current_view in {"Vocabulary", "Grammar", "Kanji"}
+        saved_mode = self.current_view == "Saved"
         if browse_mode:
             self.browse_kana_label.grid()
             self.kana_rail.grid()
         else:
             self.browse_kana_label.grid_remove()
             self.kana_rail.grid_remove()
-        self.context_study_button.configure(text="Quiz" if base_view == "Grammar" else "Flashcards")
+        if saved_mode:
+            self.context_study_button.grid_remove()
+        else:
+            self.context_study_button.grid()
+            self.context_study_button.configure(text="Quiz" if base_view == "Grammar" else "Flashcards")
         n1_enabled = base_view in {"Grammar", "Kanji"}
         self.level_buttons["N1"].configure(state="normal" if n1_enabled else "disabled")
 
@@ -2140,6 +2174,23 @@ class JLPTStudyApp(ctk.CTk):
         self.render_vocab_rows()
         self.vocab_view.tkraise()
 
+    def show_saved(self):
+        self.current_view = "Saved"
+        if hasattr(self, "vocab_table"):
+            self.vocab_table.set_rendering_enabled(True)
+        self.show_vocab_header_status()
+        self.set_nav_buttons("Saved", force=True)
+        self.title_label.configure(text="Saved")
+        self.subtitle_label.configure(text="Double-click a saved row to remove it.")
+        self.search_var.set("")
+        self.search_entry.configure(
+            textvariable=self.search_var,
+            placeholder_text="Search saved items...",
+        )
+        self.last_vocab_render_key = None
+        self.render_vocab_rows()
+        self.vocab_view.tkraise()
+
     def show_kanji_flashcards(self, level):
         self.current_level = level
         self.current_view = "Kanji Flashcards"
@@ -2257,13 +2308,22 @@ class JLPTStudyApp(ctk.CTk):
             words = self.words(self.current_level)
             searchable_keys = ("kanji", "furigana", "romaji", "type", "meaning")
             unit = "words"
+        elif self.current_view == "Saved":
+            words = self.saved_display_rows()
+            searchable_keys = ("item", "reading", "detail", "meaning", "_category_label", "_level", "_kana")
+            unit = "saved item" if len(words) == 1 else "saved items"
         else:
             words = [dict(item) for item in self.data[self.current_view.lower()].get(self.current_level, [])]
             words.sort(key=lambda row: reference_kana_sort_key(self.current_view, row))
             searchable_keys = tuple(key for key in words[0] if key != "source_url") if words else ()
             unit = "grammar points" if self.current_view == "Grammar" else "kanji"
+        if self.current_view in {"Vocabulary", "Grammar", "Kanji"}:
+            saved_keys = {self.saved_entry_key(entry) for entry in self.saved_items}
+            for word in words:
+                entry = self.make_saved_entry(self.current_view, self.current_level, word)
+                word["_saved"] = self.saved_entry_key(entry) in saved_keys
         query = self.search_var.get().strip().lower()
-        render_key = (self.current_view, self.current_level, query)
+        render_key = (self.current_view, self.current_level, query, len(self.saved_items))
         if render_key == self.last_vocab_render_key:
             self.update_kana_buttons()
             return
@@ -2271,7 +2331,14 @@ class JLPTStudyApp(ctk.CTk):
         if query:
             words = [word for word in words if query in " ".join(str(word.get(key, "")) for key in searchable_keys).lower()]
 
-        self.count_var.set(f"{len(words)} {unit}" if words else "0 matches")
+        if words:
+            self.count_var.set(f"{len(words)} {unit}")
+        elif query:
+            self.count_var.set("0 matches")
+        elif self.current_view == "Saved":
+            self.count_var.set("0 saved items  •  Double-click any study row to save it")
+        else:
+            self.count_var.set("0 matches")
         self.tree_items_by_kana = {}
 
         if self.current_view in {"Vocabulary", "Grammar", "Kanji"}:
@@ -3636,6 +3703,170 @@ class JLPTStudyApp(ctk.CTk):
             return False
         return True
 
+    def load_saved_items(self):
+        if not SAVED_ITEMS_PATH.exists():
+            return []
+        try:
+            with SAVED_ITEMS_PATH.open("r", encoding="utf-8") as saved_file:
+                payload = json.load(saved_file)
+        except (OSError, json.JSONDecodeError):
+            return []
+        items = payload.get("items", []) if isinstance(payload, dict) else payload
+        if not isinstance(items, list):
+            return []
+        result = []
+        seen = set()
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            section = item.get("section")
+            level = item.get("level")
+            values = item.get("values")
+            if section not in {"Vocabulary", "Grammar", "Kanji"} or level not in LEVELS or not isinstance(values, dict):
+                continue
+            cleaned = {
+                "section": section,
+                "level": level,
+                "kana": str(item.get("kana", "")).strip(),
+                "values": {str(key): str(value).strip() for key, value in values.items()},
+            }
+            key = self.saved_entry_key(cleaned)
+            if key not in seen:
+                seen.add(key)
+                result.append(cleaned)
+        return result
+
+    def write_saved_items(self):
+        try:
+            SAVED_ITEMS_PATH.parent.mkdir(parents=True, exist_ok=True)
+            with SAVED_ITEMS_PATH.open("w", encoding="utf-8") as saved_file:
+                json.dump({"version": 1, "items": self.saved_items}, saved_file, ensure_ascii=False, indent=2)
+        except OSError:
+            return False
+        return True
+
+    def saved_entry_key(self, entry):
+        section = entry.get("section", "")
+        values = entry.get("values", {})
+        keys = {
+            "Vocabulary": ("kanji", "furigana", "romaji", "type", "meaning"),
+            "Grammar": ("pattern", "romaji", "meaning"),
+            "Kanji": ("kanji", "onyomi", "kunyomi", "meaning"),
+        }.get(section, tuple(sorted(values)))
+        return json.dumps(
+            [section, entry.get("level", ""), *[values.get(key, "") for key in keys]],
+            ensure_ascii=False,
+        ).lower()
+
+    def make_saved_entry(self, section, level, row):
+        keys = {
+            "Vocabulary": ("kanji", "furigana", "romaji", "type", "meaning"),
+            "Grammar": ("pattern", "romaji", "meaning"),
+            "Kanji": ("kanji", "onyomi", "kunyomi", "meaning"),
+        }[section]
+        values = {key: str(row.get(key, "")).strip() for key in keys}
+        return {
+            "section": section,
+            "level": level,
+            "kana": row_kana(section, row),
+            "values": values,
+        }
+
+    def is_saved_entry(self, entry):
+        key = self.saved_entry_key(entry)
+        return any(self.saved_entry_key(saved) == key for saved in self.saved_items)
+
+    def saved_entry_label(self, entry):
+        values = entry.get("values", {})
+        if entry.get("section") == "Grammar":
+            return values.get("pattern") or "Grammar point"
+        return values.get("kanji") or values.get("furigana") or "Item"
+
+    def toggle_saved_row(self, row):
+        if not isinstance(row, dict):
+            return
+        if self.current_view == "Saved":
+            entry = row.get("_entry")
+        elif self.current_view in {"Vocabulary", "Grammar", "Kanji"}:
+            entry = self.make_saved_entry(self.current_view, self.current_level, row)
+        else:
+            return
+        if not isinstance(entry, dict):
+            return
+        key = self.saved_entry_key(entry)
+        existing_index = next(
+            (index for index, saved in enumerate(self.saved_items) if self.saved_entry_key(saved) == key),
+            None,
+        )
+        saved = existing_index is None
+        if saved:
+            self.saved_items.append(entry)
+        else:
+            removed = self.saved_items.pop(existing_index)
+        if not self.write_saved_items():
+            if saved:
+                self.saved_items.pop()
+            else:
+                self.saved_items.insert(existing_index, removed)
+            self.show_app_toast("Could not update Saved items", success=False)
+            return
+        if hasattr(self, "settings_saved_button"):
+            self.settings_saved_button.configure(text=self.saved_button_text())
+        label = self.saved_entry_label(entry)
+        self.show_app_toast(
+            f'"{label}" saved.' if saved else f'"{label}" removed from Saved.',
+            success=True,
+        )
+        self.last_vocab_render_key = None
+        if self.current_view == "Saved":
+            self.render_vocab_rows()
+        else:
+            self.render_vocab_rows()
+
+    def saved_display_rows(self):
+        rows = []
+        for entry in self.saved_items:
+            section = entry["section"]
+            values = entry["values"]
+            if section == "Vocabulary":
+                item = values.get("kanji") or values.get("furigana", "")
+                reading = values.get("furigana", "")
+                details = " • ".join(value for value in (values.get("romaji", ""), values.get("type", "")) if value)
+            elif section == "Grammar":
+                item = values.get("pattern", "")
+                reading = values.get("romaji", "")
+                details = "Grammar"
+            else:
+                item = values.get("kanji", "")
+                reading = f"On: {values.get('onyomi') or '—'}"
+                details = f"Kun: {values.get('kunyomi') or '—'}"
+            rows.append(
+                {
+                    "item": item,
+                    "reading": reading,
+                    "detail": details,
+                    "meaning": values.get("meaning", ""),
+                    "_category": section,
+                    "_category_label": section,
+                    "_level": entry["level"],
+                    "_kana": entry.get("kana") or "Other",
+                    "_entry": entry,
+                    "_saved": True,
+                }
+            )
+        category_order = {"Vocabulary": 0, "Grammar": 1, "Kanji": 2}
+        level_order = {level: index for index, level in enumerate(LEVELS)}
+        rows.sort(
+            key=lambda row: (
+                category_order.get(row["_category"], 9),
+                level_order.get(row["_level"], 9),
+                KANA_INDEX.get(row["_kana"], 999),
+                row["reading"].lower(),
+                row["item"].lower(),
+            )
+        )
+        return rows
+
     def load_custom_vocabulary(self):
         if not CUSTOM_VOCAB_PATH.exists():
             return {"version": 1, "levels": {}}
@@ -4160,11 +4391,19 @@ def detect_display_scale(window):
 
 
 class VocabGrid(tk.Frame):
-    def __init__(self, parent, scale=1.0, active_kana_callback=None, selection_callback=None):
+    def __init__(
+        self,
+        parent,
+        scale=1.0,
+        active_kana_callback=None,
+        selection_callback=None,
+        double_click_callback=None,
+    ):
         super().__init__(parent, bd=0, highlightthickness=1)
         self.scale = None
         self.active_kana_callback = active_kana_callback
         self.selection_callback = selection_callback
+        self.double_click_callback = double_click_callback
         self.synced_kana = None
         self.mode = "Vocabulary"
         self.group_by_kana = True
@@ -4207,6 +4446,7 @@ class VocabGrid(tk.Frame):
         self.body.bind("<Motion>", self.on_motion)
         self.body.bind("<Leave>", self.on_leave)
         self.body.bind("<Button-1>", self.on_click)
+        self.body.bind("<Double-Button-1>", self.on_double_click)
         self.body.bind("<MouseWheel>", self.on_mousewheel)
         self.header.bind("<MouseWheel>", self.on_mousewheel)
         self.refresh_theme()
@@ -4228,12 +4468,19 @@ class VocabGrid(tk.Frame):
                 ("romaji", "Romaji", 1.15),
                 ("meaning", "Meaning", 2.75),
             ]
-        else:
+        elif mode == "Kanji":
             self.columns = [
                 ("kanji", "Kanji", 0.65),
                 ("onyomi", "On'yomi", 1.8),
                 ("kunyomi", "Kun'yomi", 1.8),
                 ("meaning", "Meaning", 2.25),
+            ]
+        else:
+            self.columns = [
+                ("item", "Item", 1.35),
+                ("reading", "Reading", 1.45),
+                ("detail", "Details", 1.4),
+                ("meaning", "Meaning", 2.4),
             ]
         if hasattr(self, "body"):
             # Rows from the previous mode use a different schema; render_vocab_rows
@@ -4250,10 +4497,14 @@ class VocabGrid(tk.Frame):
         self.table_header_height = round(36 * scale)
         self.section_height = round(60 * scale)
         self.section_gap = round(42 * scale)
+        self.category_height = round(78 * scale)
+        self.level_height = round(52 * scale)
         self.bottom_padding = round(54 * scale)
         self.header_font = ("Segoe UI", round(12 * scale), "bold")
         self.row_font = ("Segoe UI", round(13 * scale))
         self.section_font = ("Segoe UI", round(14 * scale), "bold")
+        self.category_font = ("Segoe UI", round(22 * scale), "bold")
+        self.level_font = ("Segoe UI", round(16 * scale), "bold")
 
     def set_scale(self, scale):
         if self.scale is not None and abs(self.scale - scale) < 0.01:
@@ -4307,6 +4558,34 @@ class VocabGrid(tk.Frame):
 
     def build_items(self):
         self.items = []
+        if self.mode == "Saved":
+            last_category = None
+            last_level = None
+            last_kana = None
+            for row_index, row in enumerate(self.rows):
+                category = row.get("_category", "Saved")
+                level = row.get("_level", "")
+                kana = row.get("_kana", "Other")
+                if category != last_category:
+                    if self.items:
+                        self.items.append({"kind": "gap"})
+                    self.items.append({"kind": "category", "label": category})
+                    last_category = category
+                    last_level = None
+                    last_kana = None
+                if level != last_level:
+                    self.items.append({"kind": "level", "label": f"JLPT {level}"})
+                    last_level = level
+                    last_kana = None
+                if kana != last_kana:
+                    if last_kana is not None:
+                        self.items.append({"kind": "gap"})
+                    self.items.append({"kind": "section", "kana": kana})
+                    self.items.append({"kind": "table_header"})
+                    last_kana = kana
+                self.items.append({"kind": "word", "word": row, "row_index": row_index})
+            self.recalculate_positions()
+            return
         if not self.group_by_kana:
             if self.rows:
                 self.items.append({"kind": "table_header"})
@@ -4340,6 +4619,10 @@ class VocabGrid(tk.Frame):
                 current_section_top = top
                 self.section_tops[item["kana"]] = top
                 top += self.section_height
+            elif item["kind"] == "category":
+                top += self.category_height
+            elif item["kind"] == "level":
+                top += self.level_height
             elif item["kind"] == "gap":
                 top += self.section_gap
             elif item["kind"] == "table_header":
@@ -4421,6 +4704,41 @@ class VocabGrid(tk.Frame):
                 break
             item = self.items[item_index]
             y0 = self.item_tops[item_index]
+            if item["kind"] == "category":
+                y1 = y0 + self.category_height
+                self.body.create_rectangle(0, y0, full_width, y1, fill=self.panel, outline="")
+                marker_y = y0 + round(18 * self.scale)
+                self.body.create_rectangle(
+                    edges[0],
+                    marker_y,
+                    edges[0] + round(58 * self.scale),
+                    marker_y + max(3, round(4 * self.scale)),
+                    fill=ACCENT,
+                    outline="",
+                )
+                self.body.create_text(
+                    edges[0],
+                    y1 - round(20 * self.scale),
+                    text=item["label"],
+                    fill=self.ink,
+                    anchor="sw",
+                    font=self.category_font,
+                )
+                continue
+
+            if item["kind"] == "level":
+                y1 = y0 + self.level_height
+                self.body.create_rectangle(0, y0, full_width, y1, fill=self.panel, outline="")
+                self.body.create_text(
+                    edges[0],
+                    y0 + self.level_height / 2,
+                    text=item["label"],
+                    fill=self.muted,
+                    anchor="w",
+                    font=self.level_font,
+                )
+                continue
+
             if item["kind"] == "gap":
                 y1 = y0 + self.section_gap
                 self.body.create_rectangle(0, y0, full_width, y1, fill=self.panel, outline="")
@@ -4473,6 +4791,8 @@ class VocabGrid(tk.Frame):
             elif row_index == self.hover_index:
                 row_fill = self.hover_bg
             values = [str(word.get(key, "")) for key, _label, _weight in self.columns]
+            if word.get("_saved") and values:
+                values[0] = f"{values[0]}  ★"
             for column_index, value in enumerate(values):
                 self.body.create_rectangle(
                     edges[column_index],
@@ -4499,6 +4819,15 @@ class VocabGrid(tk.Frame):
     def on_click(self, event):
         row_index = self.row_at_y(self.body.canvasy(event.y))
         self.select_index(None if row_index == self.selected_index else row_index, animated=True)
+
+    def on_double_click(self, event):
+        row_index = self.row_at_y(self.body.canvasy(event.y))
+        if row_index is None or not (0 <= row_index < len(self.rows)):
+            return "break"
+        self.select_index(row_index, animated=False)
+        if self.double_click_callback:
+            self.double_click_callback(self.rows[row_index])
+        return "break"
 
     def on_motion(self, event):
         row_index = self.row_at_y(self.body.canvasy(event.y))
